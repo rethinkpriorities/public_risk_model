@@ -1,0 +1,2172 @@
+---
+title: "Impact of Shrimp Welfare Issues"
+author: "Hannah McKay and William McAuliffe"
+date: "2023-Aug-03"
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 5
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this document, we estimate the intensity, duration, and prevalence of pain caused to farmed shrimp by welfare threats. We focused only on penaeid species as these account for 92% of all farmed shrimp ([Waldhorn & Autric, 2022](http://doi.org/10.31219/osf.io/b8n3t)) and because there is a greater volume of aquaculture research available for these species. The two most commonly farmed species are *P. vannamei* and *P. monodon*.
+
+## Method
+
+We begin by uploading packages and writing functions that we will reuse. By convention, whenever we sample distributions, we will use 100,000 draws. We set the randomization seed to 123 for replicability. For time, we always use minutes as the unit.
+
+```{r, message=FALSE}
+
+library(tidyverse)
+library(truncnorm)
+library(extraDistr)
+library(EnvStats)
+library(janitor)
+
+set.seed(123)
+
+##write function to verify that proportions sum to 1
+check_sum <- function(x){
+  if(sum(x)==1){
+    return(sum(x))
+    }
+  stopifnot(sum(x)==1)
+}
+
+
+# sample one set probabilities multiplied by other sets of probabilities across rows
+ sample_row <- function(row) {
+  return(sum(row[1:4]*row[5:8]))
+}
+
+#sample from the beta distribution by specifying the mean proportion an its standard deviation
+sample_beta <- function(mean_val, sd_val) {
+  n <- 100000
+  # calculate alpha and beta parameters
+  var_val <- sd_val^2
+  alpha <- ((1 - mean_val) / var_val - 1 / mean_val) * mean_val^2
+  beta <- alpha * (1 / mean_val - 1)
+  # Check and adjust alpha and beta to ensure they are valid for the beta distribution
+  if (alpha <= 0 | beta <= 0) {
+    stop("Invalid shape parameters: alpha and beta must be greater than 0.")
+  }
+  # sample from beta distribution
+  return(rbeta(n, alpha, beta))
+}
+
+#sample from lognormal distribution
+sample_logn<- function(mean, sd) {
+  logn_dist<-rlnorm(n = 100000, meanlog = log(mean^2 / sqrt(mean^2 + sd^2)),
+                    sdlog = sqrt(log(1 + (sd^2/mean^2))))
+  return(logn_dist)
+}
+
+sample_trunclogn <- function(n_value, mean, sd, min_value, max_value){
+  trunclogn_dist<-rlnormTrunc(n = n_value, meanlog = log(mean^2 / sqrt(mean^2 + sd^2)),
+                    sdlog = sqrt(log(1 + (sd^2/mean^2))),
+                    min=min_value, max=max_value)
+  return(trunclogn_dist)
+}
+```
+
+#### Prevalence estimates
+
+There are four broad categories of shrimp farms: extensive, semi-intensive, intensive, and super-intensive.
+
+Based on 2018 data from [Boyd et al. (2021)](https://doi.org/10.1111/jwas.12841), and accounting for increasing intensification, we estimate the percentage of penaeid shrimp raised in different production systems as:
+
+-   Extensive: \~11.5%
+-   Semi-intensive: \~16.5%
+-   Intensive: \~71.8%
+-   Super-intensive: \~1%
+
+Although we assume these estimates are credible, we add in a modest amount of uncertainty to account for potential weaknesses in [Boyd et al. (2018)](https://doi.org/10.1111/jwas.12841), changes that may have occurred since the survey was conducted, and because these proportions relate to the shrimp produced at the end of production---they do not account for individuals who die pre-slaughter. We could not find any data about pre-slaughter mortality rates at different farm types, but it is possible the proportions would change were such data included.
+
+```{r}
+
+# Define the expected proportions for each practice
+ext_mean <- 0.115
+semi_mean <- 0.165
+int_mean <- 0.71
+super_mean <- 0.01
+
+check_sum(c(ext_mean,semi_mean,int_mean,super_mean))
+
+# Define the parameters for the Dirichlet distribution
+dir_params <- c(ext_mean*100, semi_mean*100, int_mean*100, super_mean*100) 
+#I multiplied by 100 to make the distributions less noisy
+
+
+# Sample from the Dirichlet distribution
+prop_sample <- rdirichlet(100000, dir_params) 
+colnames(prop_sample)<-c("Ext","Semi","Int",
+                                     "Super")
+production_summarydist<-round(rbind((quantile(x =prop_sample[,1], probs = c(.05, .50, .95))), 
+       (quantile(x =prop_sample[,2], probs = c(.05, .50, .95))), 
+        (quantile(x =prop_sample[,3], probs = c(.05, .50, .95))),
+        (quantile(x =prop_sample[,4], probs = c(.05, .50, .95)))), 2)
+row.names(production_summarydist)<-c("Extensive","Semi-Intensive","Intensive",
+                                     "Super-Intensive")
+production_summarydist 
+
+```
+
+We then evaluate prevalence by estimating the likelihood a welfare threat occurs at the different farm types, using the following categories:
+
+-   Very unlikely: \<20%
+-   Unlikely: 20%-39%
+-   Somewhat likely: 40%-59%
+-   Likely: 60%-79%
+-   Very likely: \>80%
+
+We use a point estimate from these, usually the midpoint of the category (though we note when we deviate from this). The uncertainty around these estimates may move them between categories.
+
+#### Pain Intensity Categories
+
+We use the Pain-Track framework ([Alonso & Schuck-Paim, 2021a](https://doi.org/10.1186/s13104-021-05636-2)) developed by [Welfare Footprint](https://welfarefootprint.org/) to compare the overall burden of different welfare threats affecting farmed shrimp. The pain categories are: annoying, hurtful, disabling, and excruciating, with each worse than the last.
+
+Welfare Footprint's pain track categories are based on functional differences between qualitatively different types of pain. Thus, they are, strictly speaking, ordinal, not cardinal representations of pain severity.
+
+However, leaving the pain categories disaggregated does not allow for an overall comparison of welfare threats because, for instance, some threats may have a long duration exclusively in mild pain categories, while others may have briefer threats in more severe categories. Here, we use Disabling as the reference category and assign weights to the other severity categories that are relative to it. We draw from uniform distributions for the pain category weightings as we have high uncertainty about how much worse or better different pain categories are, or whether long-lasting, mild pains should be prioritized over shorter, more severe pains or vice versa. In particular, we have no priors about whether excruciating pain is a few or many orders of magnitude worse than disabling pain. For more discussion of this issue, see [McAuliffe and Shriver (2022)](http://doi.org/10.31219/osf.io/ezvr2).
+
+Our lower bounds for excruciating pain and upper bounds for annoying and disabling pain are weights favored by [Duffy (2023)](https://docs.google.com/document/d/1p7xqop2FlIF8Kw45za0NnJPwvUA70Mb1UzjijMRKRr8/edit#bookmark=id.lyp2mcdwi2sh) and [Šimčikas (2022)](https://perma.cc/8DJP-XWCA). The weights were therefore as follows:
+
+-   Annoying: 0.01 to 0.02
+-   Hurtful: 0.1 to 0.25
+-   Disabling: 2 to 10
+-   Excruciating: 60 to 150
+
+You can change the input below if you disagree with the relative weights. Moreover, all of the inputs below can be changed to reflect your personal beliefs about the intensity, duration, and prevalence of each welfare harm.
+
+```{r, out.width="100%"}
+
+Annoying_Weight<-runif(n = 100000, min = (1/100), max = (1/50))
+Hurtful_Weight<-runif(n = 100000, min = (1/10), max = (1/4))
+Disabling_Weight <- runif(n = 100000, min = 2, max = 10)
+Excruciating_Weight<-runif(n = 100000, min = 60, max = 150)
+
+par(mfcol=c(1,3))
+plot(density(Annoying_Weight),  main="Annoying weightings")
+plot(density(Hurtful_Weight), main="Hurtful weightings")
+plot(density(Disabling_Weight), main="Disabling weightings")
+plot(density(Excruciating_Weight), main="Excruciating weightings")
+
+```
+
+#### Duration of pain
+
+We base pain duration on the scientific literature where possible. Where a welfare threat could plausibly last for a shrimp's entire life, we estimate the proportion of a shrimp's life spent experiencing the welfare issue and drawing from the average penaeid mortality distribution. We can then also estimate the proportion of shrimp experiencing welfare threats that are life-stage specific (e.g., slaughter).
+
+We use the estimates presented in [Waldhorn and Autric's (2022)](https://www.getguesstimate.com/models/21262) Guesstimate model\*. Specifically, we use the mortality rate of each life stage multiplied by the mean number of days a shrimp lives given that dies in a certain life stage, and then weight these by the proportion of farmed shrimp each species accounts for. We could not find standard deviations for these mortality rates and instead had to use an estimation: we made the standard deviation half of the difference between the lower bound and mean, and the upper bound and mean (i.e., standard deviation=(mean-lower+upper-mean)/2)
+
+\*Note that Guesstimate uses Monte Carlo simulation and re-samples each time the model is opened, so the numbers in [Waldhorn and Autric's (2022)](https://www.getguesstimate.com/models/21262) model when you open it may differ slightly from those used here.
+
+```{r}
+# proportion of farmed shrimp per species
+vannamei<-880/1004
+monodon<-59/1004
+otherpen<-65/1004
+
+check_sum(c(vannamei, monodon, otherpen))
+
+# sample from the Dirichlet distribution
+dir_species <- c(vannamei*100, monodon*100, otherpen*100)
+prop_sample_species <- rdirichlet(100000, dir_species)
+head(prop_sample_species)
+
+# check that 90% interval is reasonable
+species_summarydist<-round(rbind(
+  (quantile(x =prop_sample_species[,1], probs = c(.05, .50, .95))), 
+  (quantile(x =prop_sample_species[,2], probs = c(.05, .50, .95))),
+  (quantile(x =prop_sample_species[,3], probs = c(.05, .50, .95)))), 2)
+row.names(species_summarydist)<-c("Vannamei", "Monodon", "OtherPen")
+head(species_summarydist)
+
+species_chosen = rep(NA, 100000)
+
+for (i in 1:100000){
+  species_chosen[i] = sample.int(
+    3, size=1, prob=prop_sample_species[i, ])
+}
+head(species_chosen)
+
+stage_probabilities = matrix(NA, nrow=100000, ncol=4)
+vannamei_probs_dir = c(0.29, 0.71*0.16, 0.71*0.84*0.23, 0.71*0.84*0.77)*10
+monodon_probs_dir = c(0.29, 0.71*0.25, 0.71*0.75*0.29, 0.71*0.75*0.71)*10
+otherpen_probs_dir = c(0.33, 0.77*0.18, 0.77*0.82*0.29, 0.77*0.82*0.71)*10
+
+for (i in 1:100000){
+  if (species_chosen[i] == 1){
+    stage_probabilities[i, ] = rdirichlet(1, vannamei_probs_dir)
+  }
+  if (species_chosen[i] == 2){
+    stage_probabilities[i, ] = rdirichlet(1, monodon_probs_dir)
+  }
+  if (species_chosen[i] == 3){
+    stage_probabilities[i, ] = rdirichlet(1, otherpen_probs_dir)
+  }
+}
+head(stage_probabilities)
+
+overall_proportion_days_lived = rep(NA, 100000)
+for (i in 1:100000){
+  stage_chosen <- sample.int(4, size=1, prob=stage_probabilities[i, ])
+  # P. vannamei
+  if (species_chosen[i] == 1){
+    if (stage_chosen == 1){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 3.1, 4.85, 0.5, 11) # larvae that die as larvae live for a mean of 3.1 days with range of 0.5 to 9 
+    }
+    if (stage_chosen == 2){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 15, 4.5, 11, 20) # post-larvae that die as post-larvae live for a mean of 15 days with range of 11 to 20 
+    }
+    if (stage_chosen == 3){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 80, 30, 20, 110) # shrimp who die in the juvenile-adult stage live for a mean of 76 days with range of 50 to 110 
+    }
+    if (stage_chosen == 4){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 150, 50, 110, 210) # 150 is the mean no. of days lived by a shrimp who survives until slaughter (with a range of 110 to 210)
+    }
+  }
+  # P. monodon
+  if (species_chosen[i] == 2){
+    if (stage_chosen == 1){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 3.3, 1, 0.5, 9.5)
+    }
+    if (stage_chosen == 2){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 17, 6, 11, 25)
+    }
+    if (stage_chosen == 3){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 76, 42, 35, 140)
+    }
+    if (stage_chosen == 4){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 170, 14, 140, 210)
+    }
+  }
+  # other penaeids
+  if (species_chosen[i] == 3){
+    if (stage_chosen == 1){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 4, 1, 0.5, 12)
+    }
+    if (stage_chosen == 2){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 37, 19, 18, 65)
+    }
+    if (stage_chosen == 3){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 73, 32, 40, 120)
+    }
+    if (stage_chosen == 4){
+      overall_proportion_days_lived[i] = sample_trunclogn(1, 150, 30, 120, 180)
+    }
+  }
+}
+
+head(overall_proportion_days_lived)
+
+overall_proportion_hours_lived = overall_proportion_days_lived*24 # convert days to hours
+
+overall_proportion_minutes_lived = overall_proportion_days_lived*24*60 # also convert days to minutes - this will be useful for legibility of some of the shorter-lived welfare threats
+
+quantile(overall_proportion_days_lived, probs = c(0.01, .05, .50, .95))
+mean(overall_proportion_days_lived)
+plot(density(overall_proportion_days_lived), main= "Average mortality rate of farmed penaeid shrimp", xlab="Days")
+
+```
+
+### Notes on Interpretation
+
+In evaluating the pain caused by multiple welfare threats, we look at each individually and leave aside causative interactions between them. Even when not caused by one another, many welfare threats may be present at the same time. Our calculations do not account for simultaneous welfare threats, so pains are, therefore, modeled as additive. Consequently, it is possible for the total hours spent in pain to be greater than a farmed shrimp's lifespan.
+
+Moreover, we are estimating the pain caused to the *average* farmed penaeid shrimp, but some welfare threats only happen to certain subpopulations of farmed shrimp. For example, only female broodstock shrimp are subjected to eyestalk ablation. While we adjust our prevalence estimations in these instances accordingly, because not all shrimp experience every welfare threat evaluated here, our estimates do not represent the experiences of any one individual well, and instead speak for an idealized, abstracted "average" farmed shrimp.
+
+While we can directly model uncertainty about the prevalence and duration of welfare threats by sampling from distributions with appropriate spread, we need an indirect strategy to account for uncertainty about which pain category the pain from a welfare threat should be in. We apportion time spent in each pain category to match our subjective confidence that a given welfare threat is in that category. Equivalently, this can be thought of as representing individual differences in how much pain different shrimp experience, which is yet another sense in which our estimates apply only to the idealized "average" farmed shrimp.
+
+A final way in which our estimates are simplifications is that we are assuming that pain category proportions do not vary over the time-course of the welfare threat. We partially address this by breaking down certain welfare threats into separate parts when we believe the pain category will likely decrease or increase in proportion over time. However, within those parts, the pain category proportions do not change. On the other hand, instead of viewing the distribution of pain categories as reflecting subjective uncertainty or a breakdown of the proportions of farmed shrimp who experience a given severity level of pain the whole time, one could instead view it as the proportion of time a single shrimp experiences each type of pain within a given part of the time-course.
+
+## Welfare threats
+
+### Low Dissolved Oxygen
+
+We follow [Pedrazzani et al. (2023)](https://doi.org/10.3390/ani13050807) and regard dissolved oxygen (DO) levels at least 4 mg per liter as optimal (to our knowledge, there is no benefit or harm of especially high DO levels) and 2-3.9 mg/L as sub-optimal. DO below the sub-optimal is likely lethal.
+
+#### Prevalence
+
+[Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) found that "traditional plus" (c.f. semi-intensive) farms had mean DO levels below the optimal and that "traditional" (c.f. extensive) farms had mean DO levels above the optimal, though the standard deviations overlap the optimal (4 mg/L) in both cases. [Venkateswarlu et al. (2019)](https://www.fisheriesjournal.com/archives/2019/vol7issue4/PartF/7-4-64-509.pdf) found that mean DO in all study areas of semi-intensive farms was above the optimal. Shrimp Welfare Project (SWP) found low DO in their [Vietnam growout pond data](https://www.shrimpwelfareproject.org/vietnam-scoping-report)\* 4 times (out of 23 measurement events; 17%) at semi-intensive farms, once at intensive farms and never at super-intensive facilities. SWP did not include extensive farms in their water quality assessment.
+
+\*data were handled the same way as in our separate [prevalence of water quality issues analysis](https://rpubs.com/wmcauliffe2222/shrimpwaterquality).
+
+[Supriatna et al. (2017)](http://www.bioflux.com.ro/docs/2017.768-778.pdf) found that all intensive farms in their study had mean DO above the optimal, and standard deviations for this data remained above the optimal.
+
+Hargreaves and Boyd ([in Alday-Sanz, 2022, p. 218](https://5mbooks.com/product/the-shrimp-book-ii)) say "the typical pattern of dissolved oxygen concentration in most commercial shrimp ponds is one of increasing dissolved oxygen concentration during day and decreasing concentration during night... penaeid shrimp typically forage on the pond bottom, where dissolved oxygen concentrations may be chronically undersaturated. Thus, shrimp in aquaculture are often exposed to hypoxic conditions".
+
+As extensive farms typically do not use any aeration methods, we categorize low DO prevalence in these farms as 'likely'. SWP data for semi-intensive farms suggest they experience low DO in less than a quarter of instances, but [Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) found average DO to be lower at semi-intensive than extensive farms. Taken together, the information suggests semi-intensive farms are 'somewhat likely' (\~50%) to have low DO, so we categorize them as such. Intensive and super-intensive farms are categorized as 'very unlikely' because only one data point showed nonoptimal DO in these types of farm.
+
+We sample from the beta distributions using the point estimates associated with these likelihood categories, and then we weight these estimates by the proportion of shrimp produced in each farm type.
+
+```{r}
+
+### Prevalence
+system_lowdo <- data.frame(FarmType = c(
+  "Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                               mean = c(.70, .50, .10, .10),
+                               sd = c(.05, .05, .05, .05))
+system_lowdo_sample<-mapply(sample_beta,system_lowdo$mean,system_lowdo$sd)
+colnames(system_lowdo_sample)<-system_lowdo$FarmType
+
+# Now weight by proportion of population that comes from each type of farm, to get overall proportion of production that is underfed. Because the proportion come from each system itself is uncertain, we must account for this in the probability that we sample from any one system in each draw. We multiply each prevalence estimate with the population proportion.
+system_lowdo_prop<-cbind(system_lowdo_sample, prop_sample)
+
+prev_lowdo <- apply(system_lowdo_prop,1, sample_row)
+```
+
+#### Intensity
+
+Low DO may physiologically prevent shrimp from being able to swim efficiently ([Duan et al., 2022](https://doi.org/10.3390/su142215413)). [Zhang et al. (2006)](https://doi.org/10.1016/j.aquaculture.2006.02.020) observed that as dissolved oxygen levels reduced, *P. vannamei* showed random short bursts of swimming and, as conditions became severe, exhibited clear surface-seeking behavior before being still at levels below 1 mg/L.
+
+In an experiment, at DO levels below 4 mg/L, mortality rates of post-larvae ranged from 39% to 58% ([Boyd & Hanson, 2010](https://www.aquaculturealliance.org/advocate/dissolved-oxygen-concentrations-pond-aquaculture/)). Low oxygen levels also hamper a shrimp's immune system, making them more susceptible to disease ([Boyd, 1989, p.25](https://aurora.auburn.edu/handle/11200/1179)).
+
+```{r}
+### Intensity
+annoying_lowdo <- 0.6909855 # 69.09855%
+hurtful_lowdo <- 0.309 # 30.9%
+disabling_lowdo<- 0.00001 # 0.001 %
+excruciating_lowdo<- 0.0000045 # 0.00045 %
+
+check_sum(c(annoying_lowdo,hurtful_lowdo,disabling_lowdo,excruciating_lowdo))
+```
+
+(For reference, say a welfare threat lasts 50% of a shrimp's life and one minute of that is excruciating pain. If a shrimp lives for an average of 1,949 hours...
+
+```{r}
+mean(overall_proportion_hours_lived)
+```
+
+...then one minute of excruciating pain would be 0.0009% of its life, so excruciating pain is 0.00045% of the welfare threat.)
+
+Now we add uncertainty around these pain proportion estimates:
+
+```{r}
+# Define the parameters for the Dirichlet distribution
+dir_lowdo <- c(annoying_lowdo*100, hurtful_lowdo*100, disabling_lowdo*100, excruciating_lowdo*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_lowdo <- rdirichlet(100000, dir_lowdo) 
+# check that 90% interval is reasonable
+lowdo_int_summary<-round(rbind((quantile(x = int_lowdo[,1], probs = c(.05, .50, .95))), 
+                                   (quantile(x = int_lowdo[,2], probs = c(.05, .50, .95))), 
+                                   (quantile(x = int_lowdo[,3], probs = c(.05, .50, .95))),
+                                   (quantile(x = int_lowdo[,4], probs = c(.05, .50, .95)))), 6)
+row.names(lowdo_int_summary)<-c("Annoying","Hurtful","Disabling",
+                                    "Excruciating")
+lowdo_int_summary 
+```
+
+#### Duration
+
+Because Boyd and Hargreaves ([in Alday-Sanz, 2022, p. 218](https://5mbooks.com/product/the-shrimp-book-ii)) suggest low DO is common most nights, we start with an estimation that around 50% of a shrimp's life is spent in low DO conditions. We skew towards a lower percentage because daytime DO levels are often over the optimal, so it seems unlikely that the *entire* night is spent in low DO conditions. Farmers are strongly incentivized to improve DO to prevent adverse effects on their production. We use a truncated normal distribution because time spent in low DO conditions can not be less than 0% or greater than 100%.
+
+```{r}
+### Duration
+lowdo_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.4, sd=0.2)
+plot(density(lowdo_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of low DO", xlab="Proportion of shrimp's life")
+
+hours_lowdo = overall_proportion_hours_lived*lowdo_dist
+quantile(hours_lowdo, probs = c(0.01, .05, .50, .95))
+
+```
+
+Having estimated the prevalence, intensity, and duration of pain caused by low DO, we now multiply these estimations together and weight them by our pain category weightings.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_lowdo = as.data.frame(
+  hours_lowdo*prev_lowdo*int_lowdo)
+colnames(average_hours_lowdo)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_lowdo$Disabling_Equivalent<- (
+  average_hours_lowdo$Annoying*Annoying_Weight) + (
+    average_hours_lowdo$Hurtful*Hurtful_Weight) +(
+      average_hours_lowdo$Disabling*Disabling_Weight)+(
+        average_hours_lowdo$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+lowdo_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_lowdo$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_lowdo$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_lowdo$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_lowdo$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_lowdo$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_lowdo))
+row.names(lowdo_summary)<-c(
+  "Annoying_lowDO","Hurtful_lowDO","Disabling_lowDO", "Excruciating_lowDO", "Disabling-Equivalent_Low_dissolved_oxygen")
+lowdo_summary
+
+```
+
+### High Temperature
+
+We broadly consider high temperature as 32.5 Celsius and above because 25.5°C to 32.4°C is the recommended optimal range for *P. vannamei* ([Pedrazzani et al., 2023](https://doi.org/10.3390/ani13050807)). The suboptimal range is 32.5°C to 35.4°C, so anything above this is likely lethal.
+
+#### Prevalence
+
+[Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) found that mean temperatures on extensive and semi-intensive farms were broadly similar. The upper bounds of the standard deviations for extensive farms were very slightly over the optimal limit of 32.4°C.
+
+SWP's [Vietnam growout pond data](https://www.shrimpwelfareproject.org/vietnam-scoping-report) showed that no semi-intensive, intensive, nor super-intensive farm had temperature over the optimal limit. [Venkateswarlu et al. (2019)](https://www.fisheriesjournal.com/archives/2019/vol7issue4/PartF/7-4-64-509.pdf) found the same for semi-intensive farms, and [Supriatna et al. (2017)](http://www.bioflux.com.ro/docs/2017.768-778.pdf) found the same on intensive farms.
+
+Extensive and semi-intensive farms are more likely to be open (not indoor) ponds, so are more susceptible to weather and seasonal conditions.
+
+Taken together, and based on our separate analysis of [water quality issue prevalence](https://rpubs.com/wmcauliffe2222/shrimpwaterquality), this suggests issues of high temperature are not likely for any farm type. We categorize all farm types as 'very unlikely', but increase our uncertainty for outdoor farms (extensive and semi-intensive farms) by increasing the standard deviations to 0.1.
+
+```{r}
+
+### Prevalence
+system_hitemp <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                           mean = c(.10, .10, .10, .10), 
+                           sd = c(.1, .1, .05, .05))
+system_hitemp_sample<-mapply(sample_beta,system_hitemp$mean,system_hitemp$sd)
+colnames(system_hitemp_sample)<-system_hitemp$FarmType
+
+# Now weight by proportion of population that comes from each type of system
+
+system_hitemp_prop<-cbind(system_hitemp_sample, prop_sample)
+
+prev_hitemp<-apply(system_hitemp_prop,1, sample_row)
+```
+
+#### Intensity
+
+*P. vannamei* show physiological changes related to oxidative stress when at 33°C for 24 hours or more, which diminishes their immune response and damages their intestinal barrier ([Duan et al., 2018](https://doi.org/10.1093/jcbiol/ruy055)).
+
+However, shrimp reared at 31°C show improved resilience to white spot syndrome virus compared to those reared at 27°C ([You et al., 2010](https://doi.org/10.1016/j.aquaculture.2010.04.024)).
+
+*P. vannamei* can withstand sudden thermal shock up to 34°C, even when maintained at this temperature for several days, and gradual changes up to 37°C, but above these temperatures, there are high mortality rates ([Dayalan et al., 2022](https://doi.org/10.1007/s11356-022-20963-y)). Additionally, gradual temperature increases to 37°C reduce feeding, and sudden increases to this temperature cause shrimp to cease feeding and show abnormal behavior like reverse swimming ([Dayalan et al., 2022](https://doi.org/10.1007/s11356-022-20963-y)). These behavioral alterations seem consistent with [Welfare Footprint's](https://welfarefootprint.org/research-projects/analytical-approach/) definitions of hurtful or disabling pain.
+
+Still, we skew proportions towards 'Annoying' pain because it seems likely that most instances of nonoptimal high temperature will not reach 37°C (i.e., they will be between 32.5 and 37°C) and *P. vannamei* show normal behavior up to 34°C ([Dayalan et al., 2022](https://doi.org/10.1007/s11356-022-20963-y)).
+
+```{r}
+### Intensity
+annoying_hitemp <- 0.849499 # 84.9499%
+hurtful_hitemp <- 0.15 # 15%
+disabling_hitemp<- 0.0005 # 0.05%
+excruciating_hitemp<- 0.000001 # 0.0001%
+
+check_sum(c(annoying_hitemp,hurtful_hitemp,disabling_hitemp,excruciating_hitemp))
+
+# Define the parameters for the Dirichlet distribution
+dir_hitemp <- c(annoying_hitemp*100, hurtful_hitemp*100, disabling_hitemp*100, excruciating_hitemp*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_hitemp <- rdirichlet(100000, dir_hitemp) 
+# check that 90% interval is reasonable
+int_hitemp_summary<-round(rbind((quantile(x =int_hitemp[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_hitemp[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_hitemp[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_hitemp[,4], probs = c(.05, .50, .95)))), 3)
+row.names(int_hitemp_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_hitemp_summary 
+```
+
+#### Duration
+
+Temperatures likely drop at night time, so we begin with a normal distribution centered on 50%. We think extreme values (0% and 100%) are unlikely, but as temperature is dependent on weather and most shrimp farming happens in the warm season, we cannot rule out extended periods of high temperature. We, therefore, center the distribution around 55%.
+
+```{r}
+### Duration
+hitemp_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.55, sd=0.2)
+plot(density(hitemp_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of high temperature", xlab="Proportion of shrimp's life")
+
+hours_hitemp = overall_proportion_hours_lived*hitemp_dist
+quantile(hours_hitemp, probs = c(0.01, .05, .50, .95))
+```
+
+We now combine prevalence, intensity, and duration.
+
+```{r}
+
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_hitemp = as.data.frame(
+  hours_hitemp*prev_hitemp*int_hitemp)
+colnames(average_hours_hitemp)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_hitemp$Disabling_Equivalent<- (
+  average_hours_hitemp$Annoying*Annoying_Weight) + (
+    average_hours_hitemp$Hurtful*Hurtful_Weight) +(
+      average_hours_hitemp$Disabling*Disabling_Weight)+(
+        average_hours_hitemp$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+hitemp_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_hitemp$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_hitemp$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_hitemp$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_hitemp$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_hitemp$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_hitemp))
+row.names(hitemp_summary)<-c(
+  "Annoying_hightemp","Hurtful_hightemp","Disabling_hightemp", "Excruciating_hightemp", "Disabling-Equivalent_High_temperature")
+hitemp_summary
+
+```
+
+### Low temperature
+
+We consider low temperature as 25.4°C and below---the suboptimal range for *P. vannamei* is 14.5--25.4°C, and less than 14.5°C is lethal ([Pedrazzani et al., 2023](https://doi.org/10.3390/ani13050807)).
+
+#### Prevalence
+
+Shrimp farmers do not farm in winter.
+
+All measurements by [Chowdhury et al. (2011)](https://doi.org/10.1007/s10499-011-9433-0), [Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717), [Supriatna et al. (2017)](http://www.bioflux.com.ro/docs/2017.768-778.pdf), and SWP's [Vietnam growout pond data](https://www.shrimpwelfareproject.org/vietnam-scoping-report) were above 25.4°C in extensive, semi-intensive, intensive, and super-intensive farms.
+
+[Venkateswarlu et al. (2019)](https://www.fisheriesjournal.com/archives/2019/vol7issue4/PartF/7-4-64-509.pdf) found that the mean temperature was slightly below the optimal of 25.5°C in two study areas of semi-intensive farms.
+
+Based on this data, we categorize all farm types as 'very unlikely' to have low temperatures.
+
+```{r}
+
+### Prevalence
+system_lotemp <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                          mean = c(.10, .10, .10, .10), 
+                          sd = c(.05, .05, .05, .05))
+system_lotemp_sample<-mapply(sample_beta,system_lotemp$mean,system_lotemp$sd)
+colnames(system_lotemp_sample)<-system_lotemp$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences low temperatures
+
+system_lotemp_prop<-cbind(system_lotemp_sample, prop_sample)
+
+prev_lotemp <- apply(system_lotemp_prop,1, sample_row)
+```
+
+#### Intensity
+
+Low temperature is linked to decreased shrimp immunity and growth ([Jia et al., 2014](https://doi.org/10.1080/10236244.2014.894349); [Ren et al., 2021](https://doi.org/10.3389/fmars.2021.746177)). However, pathogens are less likely to be virulent at lower temperatures. *P. vannamei* and *P. monodon* stop feeding (and the latter also stops swimming) at around 18°C ([Table 2 in Ren et al., 2021](https://doi.org/10.3389/fmars.2021.746177)).
+
+```{r}
+### Intensity
+annoying_lotemp <- 0.89999949 # 89.999949%
+hurtful_lotemp <- 0.10    # 10%
+disabling_lotemp<- 0.0000005 # 0.00005%
+excruciating_lotemp<- 0.00000001 # 0.000001%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_lotemp,hurtful_lotemp,disabling_lotemp,excruciating_lotemp))
+
+# Define the parameters for the Dirichlet distribution
+dir_lotemp <- c(annoying_lotemp*100, hurtful_lotemp*100, disabling_lotemp*100, excruciating_lotemp*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_lotemp <- rdirichlet(100000, dir_lotemp) 
+# check that 90% interval is reasonable
+int_lotemp_summary<-round(rbind((quantile(x =int_lotemp[,1], probs = c(.05, .50, .95))), 
+                              (quantile(x =int_lotemp[,2], probs = c(.05, .50, .95))), 
+                              (quantile(x =int_lotemp[,3], probs = c(.05, .50, .95))),
+                              (quantile(x =int_lotemp[,4], probs = c(.05, .50, .95)))), 6)
+row.names(int_lotemp_summary)<-c("Annoying","Hurtful","Disabling",
+                               "Excruciating")
+int_lotemp_summary 
+```
+
+#### Duration
+
+Temperature increases during the day, so we use a normal distribution centered on 50%. But shrimp farmers do not farm in the colder seasons, so there is less likely to be prolonged periods of cold. Therefore we skew to a distribution centered on 10%.
+
+```{r}
+### Duration
+lotemp_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.10, sd=0.2)
+plot(density(lotemp_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of low temperature", xlab="Proportion of shrimp's life")
+
+hours_lotemp = overall_proportion_hours_lived*lotemp_dist
+quantile(hours_lotemp, probs = c(0.01, .05, .50, .95))
+```
+
+Now we combine prevalence, intensity, and duration of low temperature.
+
+```{r}
+
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_lotemp = as.data.frame(
+  hours_lotemp*int_lotemp*prev_lotemp)
+colnames(average_hours_lotemp)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_lotemp$Disabling_Equivalent<- (
+  average_hours_lotemp$Annoying*Annoying_Weight) + (
+    average_hours_lotemp$Hurtful*Hurtful_Weight) +(
+      average_hours_lotemp$Disabling*Disabling_Weight)+(
+        average_hours_lotemp$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+lotemp_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_lotemp$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_lotemp$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_lotemp$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_lotemp$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_lotemp$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_lotemp))
+row.names(lotemp_summary)<-c(
+  "Annoying_lowtemp","Hurtful_lowtemp","Disabling_lowtemp", "Excruciating_lowtemp", "Disabling-Equivalent_Low_temperature")
+lotemp_summary
+```
+
+### Low salinity
+
+For *P. vannamei*, 10-40.9 psu is the optimal range; 0.6-9.9 and 41.0-59.0 psu are the suboptimal ranges ([Table 11 of Pedrazzani et al., 2023](https://doi.org/10.3390/ani13050807)).
+
+#### Prevalence
+
+[Chowdhury et al. (2011)](https://doi.org/10.1007/s10499-011-9433-0) found that mean salinity on extensive farms was below the optimal of 10 psu, while [Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) found the opposite.
+
+[Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) also found that mean salinities on semi-intensive farms were within the optimal range, as did [Venkateswarlu et al. (2019)](https://www.fisheriesjournal.com/archives/2019/vol7issue4/PartF/7-4-64-509.pdf).
+
+[Supriatna et al. (2017)](http://www.bioflux.com.ro/docs/2017.768-778.pdf) report that all intensive farms in their study had mean salinities within the optimal range.
+
+All measurements in SWP's [Vietnam growout pond data](https://www.shrimpwelfareproject.org/vietnam-scoping-report) were below the optimal for semi-intensive and intensive farms. For super-intensive farms, four of thirteen measurements (31%) were within the optimal, two (15%) were exactly at the optimal limit of 10 psu, and the rest (54%) were below the optimal range.
+
+Rain can reduce salinity, so we expect low salinity to be more prevalent on outdoor farms. This increases our prevalence likelihood for extensive and semi-intensive farms.
+
+Intensive and super-intensive facilities may be more likely to use low-salinity water, as high-salinity water represents a significant production cost ([Boopathy et al., 2007](https://doi.org/10.1016/j.ibiod.2006.05.003); [Roy et al., 2010](https://doi.org/10.1111/j.1753-5131.2010.01036.x)). shrimp in these systems are likely acclimatized to low salinity prior to being put in ponds, which would negate some of the negative impacts ([Roy et al., 2010](https://doi.org/10.1111/j.1753-5131.2010.01036.x); [Suantika et al., 2018](https://doi.org/10.1016/j.aquaeng.2018.04.002)). This increases our prevalence likelihood for intensive and super-intensive farms.
+
+We categorize all farm types as 'likely' to experience low salinity.
+
+```{r}
+
+### Prevalence
+system_salin <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                           mean = c(.70, .70, .70, .70),
+                           sd = c(.05, .05, .05, .05)) 
+system_salin_sample<-mapply(sample_beta,system_salin$mean,system_salin$sd)
+colnames(system_salin_sample)<-system_salin$FarmType
+
+##Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences low salinity
+system_salin_prop<-cbind(system_salin_sample, prop_sample)
+
+prev_salin <- apply(system_salin_prop,1, sample_row) 
+```
+
+#### Intensity
+
+Shrimp species commonly raised for food have mechanisms for adjusting their internal salinity, but these adjustments take time, so rapid changes in salinity can cause "osmotic shock," potentially leading to death.
+
+When shrimp are reared at 2 psu they show reduced growth and survival ([Gao et al., 2016](https://doi.org/10.1016/j.aqrep.2016.09.001)).
+
+However, penaeid shrimp, particularly *P. vannamei,* can tolerate a very wide range of salinities ([McGraw et al., 2002](https://doi.org/10.1111/j.1749-7345.2002.tb00481.x); [Chen et al., 2016](https://doi.org/10.1186/s40064-016-1878-1)), so the effects of nonoptimal salinities are predominantly sublethal.
+
+```{r}
+
+### Intensity
+annoying_salin <- 0.9849989 # 98.49989%
+hurtful_salin <- 0.015 # 1.5%
+disabling_salin<- 0.000001 # 0.0001%
+excruciating_salin<- 0.0000001 # 0.00001%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_salin,hurtful_salin,disabling_salin,excruciating_salin))
+
+# Define the parameters for the Dirichlet distribution
+dir_salin <- c(annoying_salin*100, hurtful_salin*100, disabling_salin*100, excruciating_salin*100)
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_salin <- rdirichlet(100000, dir_salin) 
+# check that 90% interval is reasonable
+int_salin_summary<-round(rbind((quantile(x =int_salin[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_salin[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_salin[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_salin[,4], probs = c(.05, .50, .95)))), 4)
+row.names(int_salin_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_salin_summary 
+```
+
+#### Duration
+
+Some farmers purposely use low-salinity water, so low salinity is more likely to last for 100% of a shrimp's life than previous water quality variables. Even farmers that use saline water experience low salinity because of rain and other factors, so we think lower values are less likely. Therefore, we center on 70%.
+
+```{r}
+### Duration
+
+# Distribution over 0% to 100% representing duration of being in low salinity conditions, we hypothesize that extreme values are less likely
+salin_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.7, sd=0.2)
+plot(density(salin_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of low salinity", xlab="Proportion of shrimp's life")
+
+hours_salin = overall_proportion_hours_lived*salin_dist
+quantile(hours_salin, probs = c(0.01, .05, .50, .95))
+```
+
+Now we combine prevalence, intensity, and duration of pain caused by low salinity.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_salin = as.data.frame(
+  hours_salin*int_salin*prev_salin)
+colnames(average_hours_salin)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_salin$Disabling_Equivalent<- (
+  average_hours_salin$Annoying*Annoying_Weight) + (
+    average_hours_salin$Hurtful*Hurtful_Weight) +(
+      average_hours_salin$Disabling*Disabling_Weight)+(
+        average_hours_salin$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+salin_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_salin$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_salin$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_salin$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_salin$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_salin$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_salin))
+row.names(salin_summary)<-c(
+  "Annoying_salinity","Hurtful_salinity","Disabling_salinity", "Excruciating_salinity", "Disabling-Equivalent_Low_salinity")
+salin_summary
+
+```
+
+### Nonoptimal pH
+
+Note that, to avoid double counting, we exclude the welfare effects nonoptimal pH may produce via causing ammonia to be toxic, as this is covered in the ammonia model.
+
+For *P. vannamei*, 6.5-8.5 is the optimal pH range, and 5.0-6.4 or 8.6-9.0 is the suboptimal range ([See Table 11 of Pedrazzani et al., 2023](https://doi.org/10.3390/ani13050807)). *P. monodon* are possibly more sensitive to small deviations ([Hsieh et al., 2021](https://www.nature.com/articles/s41598-021-00612-z); [Noor-Hamid et al., 1994](https://doi.org/10.1016/0044-8486(94)90283-6))
+
+#### Prevalence
+
+[Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) and [Chowdhury et al. (2011)](https://doi.org/10.1007/s10499-011-9433-0) both found that mean pH on extensive farms was within the optimal range (though the upper bounds of some standard deviations went into the suboptimal range, above 8.5 in both).
+
+[Hukom et al. (2020)](https://doi.org/10.1016/j.ecolecon.2020.106717) found that mean pH was optimal on *P. vannamei* semi-intensive farms but suboptimal (above 8.5) on *P. monodon* farms. All mean pH values from semi-intensive farms measured by [Venkateswarlu et al. (2019)](https://www.fisheriesjournal.com/archives/2019/vol7issue4/PartF/7-4-64-509.pdf) were within the optimal, though all had error bars with upper bounds not only outside the optimal range but into the lethal range. All measurements by [SWP in Vietnam](https://www.shrimpwelfareproject.org/vietnam-scoping-report) on semi-intensive farms were within the optimal pH range, except one.
+
+[Supriatna et al. (2017)](http://www.bioflux.com.ro/docs/2017.768-778.pdf) report that mean pH on all intensive farms was within the optimal range, while SWP report five of six measurements on intensive farms to be within the optimal and one within suboptimal range (i.e., below 6.5).
+
+All measurements by SWP at super-intensive farms were within the optimal range.
+
+According to [Kubitza (2017)](https://www.aquaculturealliance.org/advocate/the-oft-overlooked-water-quality-parameter-ph/), pH levels are often overlooked, and pH levels of 9 in ponds in the afternoon are "quite common". A recent survey conducted in India reported that pH is usually not measured by shrimp producers [(Boyd et al., 2018)](https://doi.org/10.1111/jwas.12524). pH in outdoor ponds can also be impacted by rain, which is usually acidic ([Boyd & Tucker, 1998, p. 224](http://doi.org/10.1007/978-1-4615-5407-3_5)).
+
+We categorize extensive and semi-intensive farms as 'somewhat likely' to have pH issues, intensive farms as 'unlikely', and super-intensive farms as 'very unlikely'.
+
+```{r}
+
+### Prevalence
+system_ph <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                           mean = c(.50, .50, .30, .10), 
+                           sd = c(.05, .05, .05, .05))
+system_ph_sample<-mapply(sample_beta,system_ph$mean,system_ph$sd)
+colnames(system_ph_sample)<-system_ph$FarmType
+
+##Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences nonoptimal pH
+system_ph_prop<-cbind(system_ph_sample, prop_sample)
+
+prev_ph <- apply(system_ph_prop,1, sample_row) 
+```
+
+#### Intensity
+
+[Puri and Falkes (2010)](https://doi.org/10.1371/journal.pone.0010244) find no evidence that shrimp possess nociceptors for extreme pH. [Furtado et al. (2015)](https://doi.org/10.1080/10236244.2015.1086539) reported 100% survival of P. vannamei at a pH level of 9. We, therefore, skew pain proportions significantly towards 'annoying'.
+
+Because pH levels affect the shape and structure of enzymes, deviations from optimal pH can reduce the functionality of proteins, reducing shrimp health ([Clayton et al., 2022, p. 296](https://books.google.com/books?hl=en&lr=&id=0ZK1EAAAQBAJ&oi=fnd&pg=PT9&dq=hargreaves+boyd+shrimp+book+&ots=X-K1Y_NWMS&sig=GdjB2vbTPMNfaTVdkn_4pf3bD-w#v=onepage&q=hargreaves%20boyd%20shrimp%20book&f=false)). [Kubitza (2017)](https://www.aquaculturealliance.org/advocate/the-oft-overlooked-water-quality-parameter-ph/) reports that extreme pH levels alone can reduce feeding, growt and immune function. Mortality and oxidative stress also seem to increase at extreme pH values of 4 and below and 9.5 and above ([Furtado et al., 2015](https://doi.org/10.1080/10236244.2015.1086539)). Some of these effects are consistent with 'hurtful', so we apportion some pain to this category.
+
+```{r}
+### Intensity
+annoying_ph <- 0.9500989 # 95.00989%
+hurtful_ph <- 0.0499 # 4.99%
+disabling_ph<- 0.000001 # 0.0001%
+excruciating_ph<- 0.0000001 # 0.00001%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_ph,hurtful_ph,disabling_ph,excruciating_ph))
+
+# Define the parameters for the Dirichlet distribution
+dir_ph <- c(annoying_ph*100, hurtful_ph*100, disabling_ph*100, excruciating_ph*100)
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_ph <- rdirichlet(100000, dir_ph) 
+# check that 90% interval is reasonable
+int_ph_summary<-round(rbind((quantile(x =int_ph[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_ph[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_ph[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_ph[,4], probs = c(.05, .50, .95)))), 4)
+row.names(int_ph_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_ph_summary 
+```
+
+#### Duration
+
+Respiration reduces pH levels because carbon dioxide outputted by respiring animals combines with water to form carbonic acid. Consequently, pH decreases at night when algal photosynthesis decreases and shrimp activity increases ([Boyd, 2017](https://www.aquaculturealliance.org/advocate/the-inevitable-ph-fluctuations-of-aquaculture-pond-water/); [Lazur, 2007](https://freshwater-aquaculture.extension.org/wp-content/uploads/2019/08/Growout_Pond_and_Water_Quality_Management.pdf)).
+
+[Kubitza (2017)](https://www.aquaculturealliance.org/advocate/the-oft-overlooked-water-quality-parameter-ph/report) a variation of around two on the pH scale within in 6 hours.
+
+As pH seems to be highly variable, we center on 50%.
+
+```{r}
+### Duration
+
+# Distribution over 0% to 100% representing duration of nonoptimal pH conditions, we hypothesize that extreme values are less likely
+ph_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.5, sd=0.2)
+plot(density(ph_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of nonoptimal pH", xlab="Proportion of shrimp's life")
+
+hours_ph = overall_proportion_hours_lived*ph_dist
+quantile(hours_ph, probs = c(0.01, .05, .50, .95))
+```
+
+Now we combine prevalence, intensity, and duration for pain caused by nonoptimal pH.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_ph = as.data.frame(
+  hours_ph*int_ph*prev_ph)
+colnames(average_hours_ph)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_ph$Disabling_Equivalent<- (
+  average_hours_ph$Annoying*Annoying_Weight) + (
+    average_hours_ph$Hurtful*Hurtful_Weight) +(
+      average_hours_ph$Disabling*Disabling_Weight)+(
+        average_hours_ph$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+ph_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_ph$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_ph$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_ph$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_ph$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_ph$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_ph))
+row.names(ph_summary)<-c(
+  "Annoying_ph","Hurtful_ph","Disabling_ph", "Excruciating_ph", "Disabling-Equivalent_Nonoptimal_pH")
+ph_summary
+```
+
+### High un-ionized ammonia
+
+For *P. vannamei*, the optimal range 0-0.10 mg/L and the suboptimal range is 0.11-0.30 mg/L ([Table 11 of Pedrazzani et al., 2023](https://doi.org/10.3390/ani13050807)).
+
+#### Prevalence
+
+The only data set that included un-ionized ammonia was SWP's [Vietnam growout pond data](https://www.shrimpwelfareproject.org/vietnam-scoping-report).
+
+They found that all semi-intensive farm measurements were above both the optimal and suboptimal (i.e., into the lethal range, above 0.30 mg/L). Four of six measurements in intensive farms were above 0.30 mg/L. In super-intensive farms, nine of thirteen measurements were above the optimal, with seven of these also above the suboptimal and into the lethal range.
+
+Intensive systems contain more shrimp and, therefore, usually more uneaten feed and excrement, raising ammonia levels. Recirculating aquaculture systems, which are usually super-intensive farms, can remove ammonia from the water or convert it to a less toxic form. Natural, extensive pond systems benefit from microbial communities breaking down toxic ammonia ([Dauda et al., 2019](https://doi.org/10.1016/j.aaf.2018.10.002)), so these farm types seem slightly less likely to have ammonia problems.
+
+We, therefore, categorize extensive and super-intensive farms as 'somewhat likely' and semi-intensive and intensive farms as 'likely' to experience high ammonia. Because we only had one data set that measured un-ionized ammonia, we represent our uncertainty around these categories by increasing the standard deviations to 0.1.
+
+```{r}
+
+### Prevalence
+system_ammon <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                            mean = c(.50, .70, .70, .50),
+                            sd = c(.10, .10, .10, .10))
+system_ammon_sample<-mapply(sample_beta,system_ammon$mean,system_ammon$sd)
+colnames(system_ammon_sample)<-system_ammon$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences high ammonia
+
+system_ammon_prop<-cbind(system_ammon_sample, prop_sample)
+
+prev_ammon <- apply(system_ammon_prop,1, sample_row)
+```
+
+#### Intensity
+
+The accumulation of un-ionized ammonia has several negative consequences, such as lower levels of feeding ([Frias-Espericueta et al., 2000](https://doi.org/10.1007/s0012800100)). The main issue, though, is that un-ionized ammonia increases the likelihood of infection via several different paths. Ammonia damages a shrimp's gills, increasing shrimp susceptibility to viruses that target the gills (e.g., WSSV; [Clayton et al., 2022, p. 306](https://books.google.com/books?hl=en&lr=&id=0ZK1EAAAQBAJ&oi=fnd&pg=PT9&dq=hargreaves+boyd+shrimp+book+&ots=X-K1Y_NWMS&sig=GdjB2vbTPMNfaTVdkn_4pf3bD-w#v=onepage&q=hargreaves%20boyd%20shrimp%20book&f=false)). Ammonia also damages the intestine barrier ([Duan et al., 2018](https://doi.org/10.1016/j.fsi.2018.04.050)), which normally prevents pathogenic invasion ([Zhao et al., 2020](https://doi.org/10.1111/raq.12429)). High ammonia concentrations also slow down hemolymph coagulation, allowing microbes to enter open wounds ([Chang et al., 2015](https://doi.org/10.1016/j.ecoenv.2015.04.019)). Finally, high ammonia concentrations cause hemocyte apoptosis ([Liu et al., 2020](https://doi.org/10.1016/j.chemosphere.2019.124759)), directly reducing immune capacity.
+
+At high enough levels in the hemolymph, ammonia directly causes mortality ([Boyd & Fast, 1992, p.498](https://books.google.es/books?id=UVPgBAAAQBAJ&lpg=PP1&dq=Marine%20Shrimp%20Culture&pg=PR8#v=onepage&q&f=false); [Boyd & Tucker, 1998, p.135](https://www.springer.com/gp/book/9780412071812); [Kubitza, 2017](https://www.aquaculturealliance.org/advocate/the-oft-overlooked-water-quality-parameter-ph/)). Signs of impending death include hyperactivity, convulsions, and then lethargy and coma ([Boyd & Tucker, 1998, pp.134-136](https://www.springer.com/gp/book/9780412071812)).
+
+```{r}
+### Intensity
+annoying_ammon <- 0.7497955 # 74.97955%
+hurtful_ammon <- 0.25 # 25%
+disabling_ammon<- 0.0002 # 0.02%
+excruciating_ammon<- 0.0000045 # 0.00045%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_ammon,hurtful_ammon,disabling_ammon,excruciating_ammon))
+
+# Define the parameters for the Dirichlet distribution
+dir_ammon <- c(annoying_ammon*100, hurtful_ammon*100, disabling_ammon*100, excruciating_ammon*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_ammon <- rdirichlet(100000, dir_ammon) 
+# check that 90% interval is reasonable
+int_ammon_summary<-round(rbind((quantile(x =int_ammon[,1], probs = c(.05, .50, .95))), 
+                                (quantile(x =int_ammon[,2], probs = c(.05, .50, .95))), 
+                                (quantile(x =int_ammon[,3], probs = c(.05, .50, .95))),
+                                (quantile(x =int_ammon[,4], probs = c(.05, .50, .95)))), 3)
+row.names(int_ammon_summary)<-c("Annoying","Hurtful","Disabling",
+                                 "Excruciating")
+int_ammon_summary 
+```
+
+#### Duration
+
+Other water quality variables modulate un-ionized ammonia. If water pH increases, the ammonia level will also rise ([Kubitza, 2017](https://www.aquaculturealliance.org/advocate/the-oft-overlooked-water-quality-parameter-ph/); [Kungvankij et al., 1986](http://www.fao.org/3/ac210e/AC210E09.htm)). Similarly, a given concentration of un-ionized ammonia is more toxic when DO ([Allan et al., 1990](https://doi.org/10.1016/0044-8486(90)90193-Q)) or salinity concentrations ([Lin & Chen, 2001](https://doi.org/10.1016/S0022-0981(01)00227-1)) are low.
+
+Because multiple other water quality factors influence un-ionized ammonia, we skew slightly above 50% of a shrimp's life, to 55%.
+
+```{r}
+### Duration
+
+# Distribution over 0% to 100% representing duration of high ammonia conditions, we hypothesize that extreme values are much less likely
+ammon_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.55, sd=0.2)
+plot(density(ammon_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of high un-ionized ammonia", xlab="Proportion of shrimp's life")
+
+hours_ammon = overall_proportion_hours_lived*ammon_dist
+quantile(hours_ammon, probs = c(0.01, .05, .50, .95))
+
+```
+
+Then we combine prevalence, intensity, and duration of pain caused by high uni-ionized ammonia.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp, the average number of minutes they are in each type of pain...
+average_hours_ammon = as.data.frame(
+  hours_ammon*int_ammon*prev_ammon)
+colnames(average_hours_ammon)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_ammon$Disabling_Equivalent<- (
+  average_hours_ammon$Annoying*Annoying_Weight) + (
+    average_hours_ammon$Hurtful*Hurtful_Weight) +(
+      average_hours_ammon$Disabling*Disabling_Weight)+(
+        average_hours_ammon$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+ammon_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_ammon$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_ammon$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_ammon$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_ammon$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_ammon$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_ammon))
+row.names(ammon_summary)<-c(
+  "Annoying_ammonia","Hurtful_ammonia","Disabling_ammonia", "Excruciating_ammonia", "Disabling-Equivalent_High_un-ionized_ammonia")
+ammon_summary
+
+```
+
+### Pollutants
+
+#### Prevalence
+
+Here, we evaluate the pain caused by lethal and sublethal levels of pesticides and heavy metals in shrimp ponds.
+
+Farms located in or near agricultural areas are more likely to experience pesticide run off.
+
+In general, we did not find much information about the prevalence of this type of issue. It is possible that pesticide levels reduced shrimp farm production in Mexico around 2001 ([Burgos-Hernández et al., 2006](https://doi.org/10.1007/s00217-005-0012-3)). Additionally, levels of insecticides detected in shrimp farm source water in Australia were high enough to potentially negatively impact shrimp ([Hook et al., 2018](https://doi.org/10.1016/j.ecoenv.2017.11.028)).
+
+Heavy metals may be present in shrimp feed ([Islam et al., 2017](https://doi.org/10.1016/j.chemosphere.2016.11.163); [Lyle-Fritch et al., 2006](https://doi.org/10.1016/j.aquaeng.2005.09.006)), or coastal and estuary water sources used to supply shrimp ponds. It seems likely that these rarely have high enough levels to cause shrimp mortality.
+
+Therefore, we categorize all farm types as 'very unlikely' to have pollutant issues, but we increase our uncertainty about extensive and semi-intensive farms by making the standard deviations 0.1, because these types of farms may be both exposed to pesticides and use feed or water with heavy metals in.
+
+```{r}
+
+### Prevalence
+system_pollut <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                        mean = c(.10, .10, .10, .10), 
+                        sd = c(.10, .10, .05, .05)) 
+system_pollut_sample<-mapply(sample_beta,system_pollut$mean,system_pollut$sd)
+colnames(system_pollut_sample)<-system_pollut$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences pollutants
+
+system_pollut_prop<-cbind(system_pollut_sample, prop_sample)
+
+prev_pollut <- apply(system_pollut_prop,1, sample_row)
+```
+
+#### Intensity
+
+In *P. vannamei*, fungicides can have adverse effects on the immune system ([Munoz et al., 2000](https://doi.org/10.1016/S0044-8486(00)00420-8)) and those exposed to sublethal concentrations of pesticides exhibit abnormal swimming, hyperactivity, and spasms ([García-de la Parra et al., 2006](https://doi.org/10.1016/j.ecoenv.2005.09.001)). For *P. monodon*, [Hook et al. (2018)](https://doi.org/10.1016/j.ecoenv.2017.11.028) found that pesticides significantly affect survival of post-larvae, and that some types inhibited feeding behavior when used at non-lethal levels.
+
+High levels of heavy metals, like cadmium and copper, can alter shrimp physiological functions, such as disruption of osmoregulation ([Frías-Espericueta et al., 2008](https://doi.org/10.1016/j.aquatox.2008.06.010)), increased ammonia secretion ([Wu et al., 2004](https://doi.org/10.1016/j.chemosphere.2004.07.033)), and gill damage, which can cause death by asphyxia ([Li et al., 2006](https://doi.org/10.1007/s00244-005-0214-5); [Frías-Espericueta et al., 2008](https://doi.org/10.1016/j.aquatox.2008.06.010)). Heavy metal stress can make shrimp more susceptible to diseases ([Bautista-Covarrubias et al., 2022](https://doi.org/10.1016/j.fsi.2022.08.054)). Chronic exposure to copper reduces growth and immunity in P. vannamei ([Qian et al., 2020](https://doi.org/10.1016/j.fsi.2020.03.018)). Additionally, the presence of multiple heavy metals at levels considered to be safe when present individually can have similar effects to lethal doses of any one heavy metal ([Frías-Espericueta et al., 2008](https://doi.org/10.1016/j.aquatox.2008.06.010)).
+
+```{r}
+
+### Intensity
+annoying_pollut <- 0.799998  # 79.9998%
+hurtful_pollut <- 0.20 # 20%
+disabling_pollut<- 0.000001 # 0.0001%
+excruciating_pollut<- 0.000001 # 0.0001%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_pollut,hurtful_pollut,disabling_pollut,excruciating_pollut))
+
+# Define the parameters for the Dirichlet distribution
+dir_pollut <- c(annoying_pollut*100, hurtful_pollut*100, disabling_pollut*100, excruciating_pollut*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_pollut <- rdirichlet(100000, dir_pollut) 
+# check that 90% interval is reasonable
+int_pollut_summary<-round(rbind((quantile(x =int_pollut[,1], probs = c(.05, .50, .95))), 
+                            (quantile(x =int_pollut[,2], probs = c(.05, .50, .95))), 
+                            (quantile(x =int_pollut[,3], probs = c(.05, .50, .95))),
+                            (quantile(x =int_pollut[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_pollut_summary)<-c("Annoying","Hurtful","Disabling",
+                             "Excruciating")
+int_pollut_summary 
+```
+
+#### Duration
+
+We think pollutants are unlikely to be present at welfare-threatening levels for long periods of time in ponds because water is often exchanged frequently, which should reduce pollutants.
+
+```{r}
+### Duration
+pollut_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.2, sd=0.2)
+plot(density(pollut_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of water pollutants", xlab="Proportion of shrimp's life")
+
+hours_pollut = overall_proportion_hours_lived*pollut_dist
+quantile(hours_pollut, probs = c(0.01, .05, .50, .95))
+```
+
+Now we combine prevalence, intensity, and duration for pollutants.
+
+```{r}
+
+# Combine prevalence, intensity and duration
+
+# Among shrimp, the average number of minutes they are in each type of pain...
+average_hours_pollut = as.data.frame(
+  hours_pollut*int_pollut*prev_pollut)
+colnames(average_hours_pollut)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_pollut$Disabling_Equivalent<- (
+  average_hours_pollut$Annoying*Annoying_Weight) + (
+    average_hours_pollut$Hurtful*Hurtful_Weight) +(
+      average_hours_pollut$Disabling*Disabling_Weight)+( average_hours_pollut$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+pollut_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_pollut$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_pollut$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_pollut$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_pollut$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_pollut$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_pollut))
+row.names(pollut_summary)<-c(
+  "Annoying_pollutant","Hurtful_pollutant","Disabling_pollutant", "Excruciating_pollutant", "Disabling-Equivalent_Water_pollutants")
+pollut_summary
+```
+
+### High density
+
+To avoid double counting and because we assume most farmers using very high densities are using methods to prevent low DO and high ammonia, we are not counting the water-quality effects of high densities here.
+
+We use observations by that shrimp in the wild are found at densities between 0.001 and 4.9 individuals per m^2^ as a reference value, assuming that this density range represents shrimp preferences.
+
+We use the stocking densities from Table 3 of our main report to compare the wild shrimp densities with that of different farm types: - Extensive: \~\<5 to 20 post-larvae per m^2^ - Semi-intensive: \~5 to 40 post-larvae per m^2^ - Intensive: \~40 to 130 post-larvae per m^2^ - Super-intensive: \~130 to \>300 post-larvae per m^2^
+
+#### Prevalence
+
+Stocking density increases with increasing farm intensity.
+
+Extensive farms use low densities but may still have shrimp at somewhat higher levels than their wild counterparts, so we categorize this farm type as 'unlikely'. Semi-intensive farms are more likely to use higher stocking densities, so we categorize this farm type as 'likely'. A defining feature of intensive and super-intensive farms is their high stocking densities, so we categorize these types as 'very likely'.
+
+```{r}
+### Prevalence
+system_dens <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                           mean = c(.30, .70, .90, .90),
+                           sd = c(.05, .05, .05, .05))
+system_dens_sample<-mapply(sample_beta,system_dens$mean,system_dens$sd)
+colnames(system_dens_sample)<-system_dens$FarmType
+
+# Now weight by proportion of population that comes from each type of system
+
+system_dens_prop<-cbind(system_dens_sample, prop_sample)
+
+prev_dens <- apply(system_dens_prop,1, sample_row)
+```
+
+#### Intensity
+
+High densities seem to reduce growth even when water quality parameters are carefully controlled ([da Silveira et al., 2020](https://doi.org/10.1111/jwas.12718)).
+
+Crowding itself may also reduce immunity---[Liu et al. (2017)](https://doi.org/10.1016/j.fsi.2017.05.038) maintained water quality parameters within recommended ranges but found that shrimp reared at higher densities had lowered immunity. This finding is consistent with shrimp experiencing negative welfare due to the chronic stress of crowding and suffering adverse health effects as a byproduct.
+
+Cannibalism rates may also be higher, which can increase disease transmission ([Wu et al., 2001](http://doi.org/10.3354/dao047129)).
+
+In terms of behavioral restrictions, [da Costa et al. (2016)](https://doi.org/10.1111/are.12550) report that retreat behaviors are less common with increasing density, suggesting that shrimp value keeping a certain distance from each other but cannot do so without simply getting closer to other individuals. [Bardera et al. (2021)](https://doi.org/10.1016/j.aquaculture.2020.735949) confirmed that there are consistent individual differences in who avoids running into other shrimp in P. vannamei at densities that are representative of extensive and semi-intensive conditions. The conflicts that establish these hierarchies are presumably negative on the whole, at least for losing individuals.
+
+We attempt to account for the fact that shrimp may be on higher alert when in higher stocking densities by having a large portion of the pain intensity in 'annoying'. Nevertheless, we apportion some pain to the 'hurtful' category to account for diseases, and to the 'disabling' and 'excruciating' categories for cannibalism and death.
+
+```{r}
+### Intensity
+annoying_dens <-0.749981 # 74.9981
+hurtful_dens <-0.25 # 25%
+disabling_dens<-0.00001 # 0.001%
+excruciating_dens<-0.000009 # 0.0009%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_dens,hurtful_dens,disabling_dens,excruciating_dens))
+
+# Define the parameters for the Dirichlet distribution
+dir_dens <- c(annoying_dens*100, hurtful_dens*100, disabling_dens*100, excruciating_dens*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_dens <- rdirichlet(100000, dir_dens) 
+# check that 90% interval is reasonable
+int_dens_summary<-round(rbind((quantile(x =int_dens[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_dens[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_dens[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_dens[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_dens_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_dens_summary 
+```
+
+#### Duration
+
+We assume high densities, where present, are present for the whole of a shrimp's life. Some shrimp farmers conduct partial harvests or reduce stocking density as shrimp get larger, so we add some uncertainty.
+
+```{r}
+### Duration
+dens_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.9, sd=0.1)
+plot(density(dens_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of high stocking density", xlab="Proportion of shrimp's life")
+
+hours_dens = overall_proportion_hours_lived*dens_dist
+quantile(hours_dens, probs = c(0.01, .05, .50, .95))
+```
+
+Now we combine the estimations for density.
+
+```{r}
+
+# Combine prevalence, intensity and duration
+
+# Among shrimp, the average number of minutes they are in each type of pain...
+average_hours_dens = as.data.frame(
+  hours_dens*int_dens*prev_dens)
+colnames(average_hours_dens)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_dens$Disabling_Equivalent<- (
+  average_hours_dens$Annoying*Annoying_Weight) + (
+    average_hours_dens$Hurtful*Hurtful_Weight) +(
+      average_hours_dens$Disabling*Disabling_Weight)+(
+        average_hours_dens$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+dens_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_dens$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_dens$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_dens$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_dens$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_dens$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_dens))
+row.names(dens_summary)<-c(
+  "Annoying_density","Hurtful_density","Disabling_density", "Excruciating_density", "Disabling-Equivalent_High_density")
+dens_summary
+```
+
+### Lack of substrate
+
+Here, we are considering both a lack of natural, burrowable substrate and a lack of artificial structures the shrimp can climb or cling to.
+
+#### Prevalence
+
+Earthen ponds, typically used for extensive and sometimes semi-intensive ponds likely have a burrowable substrate on the pond bottom. Some semi-intensive ponds are lined with plastic, however. Intensive and super-intensive ponds are plastic or concrete lined, or are raised tanks, which would not have substrate available to shrimp.
+
+Using artificial screens or other structures shrimp can cling to is not standard practice in any farm type. It is possible that extensive ponds may have plants growing in them, which shrimp could use for this purpose, though we are very uncertain about this.
+
+As such, we categorize extensive farms as 'unlikely' to lack substrate, semi-intensive as 'somewhat likely', and intensive and super-intensive as 'very likely'.
+
+```{r}
+
+### Prevalence
+system_subst <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                          mean = c(.30, .50, .90, .90),
+                          sd = c(.05, .05, .05, .05)) 
+system_subst_sample<-mapply(sample_beta,system_subst$mean,system_subst$sd)
+colnames(system_subst_sample)<-system_subst$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that has no substrate.
+
+system_subst_prop<-cbind(system_subst_sample, prop_sample)
+
+prev_subst <- apply(system_subst_prop,1, sample_row)
+```
+
+#### Intensity
+
+*P. monodon* shrimp burrow daily in the wild ([FAO, 2023](https://www.fao.org/fishery/en/culturedspecies/penaeus_monodon/en)), so having no burrowable substrate probably behaviorally deprives them significantly. It is less clear to what extent *P. vannamei* burrow.
+
+We, therefore, attribute most pain from a lack of substrate to 'annoying', with a small portion attributed to 'hurtful' to account for *P. monodon* not being able to express species-typical behaviors (we estimate this at 0.2% but weight this by the proportion of shrimp who are *P. monodon*. We assign a tiny portion to 'disabling' and 'excruciating' because cannibalism incidences may be more common when no substrate is present, even at the same densities ([Abdussamad & Thampy, 1994](http://eprints.cmfri.org.in/id/eprint/4457)).
+
+```{r}
+### Intensity
+annoying_subst <-0.9998815701 # 99.98816
+hurtful_subst <-0.0001175299 # 0.01175299% = 0.2% of pain for P. monodon * proportion that are monodon (0.05876494)
+disabling_subst<-0.00000045 # 0.000045%
+excruciating_subst<-0.00000045 # 0.000045%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_subst,hurtful_subst,disabling_subst,excruciating_subst))
+
+# Define the parameters for the Dirichlet distribution
+dir_subst <- c(annoying_subst*100, hurtful_subst*100, disabling_subst*100, excruciating_subst*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_subst <- rdirichlet(100000, dir_subst) 
+# check that 90% interval is reasonable
+int_subst_summary<-round(rbind((quantile(x =int_subst[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_subst[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_subst[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_subst[,4], probs = c(.05, .50, .95)))), 7)
+row.names(int_subst_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_subst_summary 
+```
+#### Duration
+
+If no substrate is present, this will be the case for 100% of a shrimp's life.
+
+```{r}
+### Duration
+hours_subst<-overall_proportion_hours_lived
+```
+
+Now we combine prevalence, intensity, and duration for lack of substrate.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_subst = as.data.frame(
+  hours_subst*int_subst*prev_subst)
+colnames(average_hours_subst)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_subst$Disabling_Equivalent<- (
+  average_hours_subst$Annoying*Annoying_Weight) + (
+    average_hours_subst$Hurtful*Hurtful_Weight) +(
+      average_hours_subst$Disabling*Disabling_Weight)+(
+        average_hours_subst$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+subst_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_subst$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_subst$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_subst$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_subst$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_subst$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_subst))
+row.names(subst_summary)<-c(
+  "Annoying_substrate","Hurtful_substrate","Disabling_substrate", "Excruciating_substrate", "Disabling-Equivalent_Lack_of_substrate")
+subst_summary
+
+```
+
+### Malnutrition
+
+#### Prevalence
+
+Extensive farms rely solely on food produced naturally by ponds for shrimp, whereas semi-intensive farms supplement this with artificial feeds, and intensive and super-intensive farms usually rely solely on artificial feeds. To what extent these artificial feeds meet shrimp nutrient requirements is difficult to know and likely highly variable across farms, feeds, and countries.
+
+Broadly, we expect malnutrition is not a significant problem on shrimp farms because nutrition is closely linked with shrimp growth and, therefore, farm production and profits. As such, shrimp farmers are highly incentivized to ensure shrimp meet their nutrient requirements. Additionally, the nutritional requirements of shrimp have been well-studied (e.g., [Ayisi et al., 2017](https://doi.org/10.1016/j.hjb.2017.09.004)).
+
+Consequently, we categorize all farm types as 'very unlikely' to have malnutrition issues, but we account for more uncertainty by increasing standard deviations to 0.1.
+
+```{r}
+### Prevalence
+system_malnutri <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                               mean = c(.10, .10, .10, .10),
+                               sd = c(0.1, 0.1, 0.1, 0.1))
+system_malnutri_sample<-mapply(sample_beta,system_malnutri$mean,system_malnutri$sd)
+colnames(system_malnutri_sample)<-system_malnutri$FarmType
+
+# weight by proportion of population that comes from each type of system
+system_malnutri_prop<-cbind(system_malnutri_sample, prop_sample)
+
+prev_malnutri <- apply(system_malnutri_prop,1, sample_row) 
+```
+
+#### Intensity
+
+Malnutrition can also reduce a shrimp's ability to respond to or resist diseases (see [Zhang et al., 2022](https://books.google.co.uk/books?hl=en&lr=&id=0ZK1EAAAQBAJ&oi=fnd&pg=PT9&dq=The+Shrimp+Book+II&ots=X-K3ZWGRKY&sig=7xNsOl7CrOKzCKX76xx0ossY9YU&redir_esc=y#v=onepage&q=The%20Shrimp%20Book%20II&f=false), pp.392-401 for review). Some forms of malnutrition, such as lack of protein, can reduce shrimp growth or cause weight loss because protein stored in the body is used for energy for other processes ([Zhang et al., 2022](https://books.google.co.uk/books?hl=en&lr=&id=0ZK1EAAAQBAJ&oi=fnd&pg=PT9&dq=The+Shrimp+Book+II&ots=X-K3ZWGRKY&sig=7xNsOl7CrOKzCKX76xx0ossY9YU&redir_esc=y#v=onepage&q=The%20Shrimp%20Book%20II&f=false), p.393).
+
+Feeds are increasingly produced using terrestrial farmed animal meat and plant-based (usually soy) meal and oils. While evidence about the effect of fishmeal replacement by soy on the shrimp themselves is scarce, [this broodstock company website](https://www.konabayshrimp.com/en/shrimp-breeding/#:~:text=Kona%20Bay%20families%20are%20routinely%20selected%20for%20tolerance%20of%20high%20levels%20of%20dietary%20soy%20protein%20to%20reduce%20reliance%20on%20scarce%20supplies%20of%20fishmeal.) suggests that *P. vannamei* shrimp need to be selectively bred to tolerate high levels of soybean meal, which may imply that this species does not naturally endure this or is not normally attracted to soybean diets. However, shrimp growth is not impacted by soy diet ([McLean et al., 2020](https://doi.org/10.1016/j.aquaculture.2020.735383)).
+
+```{r}
+### Intensity
+annoying_malnutri <- 0.999099998 # 99.9099998
+hurtful_malnutri <- 0.0009  # 0.09%
+disabling_malnutri<- 0.000000001 # 0.0000001%
+excruciating_malnutri<- 0.000000001 # 0.0000001%
+
+check_sum(c(annoying_malnutri,hurtful_malnutri,disabling_malnutri,excruciating_malnutri))
+
+# Define the parameters for the Dirichlet distribution
+dir_malnutri <- c(annoying_malnutri*100, hurtful_malnutri*100, disabling_malnutri*100, excruciating_malnutri*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_malnutri <- rdirichlet(100000, dir_malnutri) 
+# check that 90% interval is reasonable
+int_malnutri_summary<-round(rbind((quantile(x =int_malnutri[,1], probs = c(.05, .50, .95))), 
+                                   (quantile(x =int_malnutri[,2], probs = c(.05, .50, .95))), 
+                                   (quantile(x =int_malnutri[,3], probs = c(.05, .50, .95))),
+                                   (quantile(x =int_malnutri[,4], probs = c(.05, .50, .95)))), 2)
+row.names(int_malnutri_summary)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+int_malnutri_summary 
+```
+
+#### Duration
+
+If a shrimp experiences malnutrition, it is likely after several feedings with inadequate nutrition. Additionally, farmers change the feed they provide to shrimp depending on shrimp life stage or other factors, like costs. Farmers generally monitor the growth of their shrimp, so if shrimp are not getting the nutrients they require and consequently not growing as expected, farmers are likely to react accordingly and try to prevent continued effects of malnutrition.
+
+Therefore, we expect that shrimp do not experience malnutrition for a significant portion of their life, so we draw from a distribution with a mean of 20%.
+
+```{r}
+### Duration
+malnutri_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.25, sd=0.2)
+plot(density(malnutri_dist), xlim=c(0,1), frame=FALSE,yaxt="n", main="Duration of malnutrition", xlab="Proportion of shrimp's life")
+
+hours_malnutri = overall_proportion_hours_lived*malnutri_dist
+quantile(hours_malnutri, probs = c(0.01, .05, .50, .95))
+```
+
+Then we combine prevalence, intensity, and duration of pain caused by malnutrition.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_malnutri = as.data.frame(
+  hours_malnutri*int_malnutri*prev_malnutri)
+colnames(average_hours_malnutri)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_malnutri$Disabling_Equivalent<- (
+  average_hours_malnutri$Annoying*Annoying_Weight) + (
+    average_hours_malnutri$Hurtful*Hurtful_Weight) +(
+      average_hours_malnutri$Disabling*Disabling_Weight)+(
+        average_hours_malnutri$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+malnutri_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_malnutri$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_malnutri$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_malnutri$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_malnutri$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_malnutri$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_malnutri))
+row.names(malnutri_summary)<-c(
+  "Annoying_malnutrition","Hurtful_malnutrition","Disabling_malnutrition", "Excruciating_malnutrition", "Disabling-Equivalent_Malnutrition")
+malnutri_summary
+
+```
+
+### Underfeeding
+
+#### Prevalence
+
+In extensive farms, shrimp rely on the natural feed of the pond. Shrimp can likely graze continuously in these ponds, so we categorize this farm type as 'very unlikely' to underfeed. Semi-intensive, intensive and super-intensive farms provision shrimp with artificial feeds, which can be expensive ([Ayisi et al., 2017](https://doi.org/10.1016/j.hjb.2017.09.004)), so underfeeding may be more common in these farm types due to farmers trying to save on costs. However, we expect underfeeding is still uncommon because it directly influences farm production and profits.
+
+Given the critical role of feeding in shrimp growth, we hypothesize that inadequate nutrition in shrimp farms is unlikely to be a welfare problem of significant scope.
+
+```{r}
+### Prevalence
+system_underfeed <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                               mean = c(.10, .30, .30, .30), 
+                               sd = c(.05, .05, .05, .05)) 
+system_underfeed_sample<-mapply(sample_beta,system_underfeed$mean,system_underfeed$sd)
+colnames(system_underfeed_sample)<-system_underfeed$FarmType
+
+# Now weight by proportion of population that comes from each type of farm
+system_underfeed_prop<-cbind(system_underfeed_sample, prop_sample)
+
+prev_underfed <- apply(system_underfeed_prop,1, sample_row) 
+
+```
+
+#### Intensity
+
+When underfed, penaeids show increased cannibalism ([Lara et al., 2017](https://doi.org/10.1016/j.aquaeng.2017.02.003)). Starved shrimp also exhibit reduced immune function ([Dai et al., 2018](https://doi.org/10.1016/j.fsi.2018.05.040)).
+
+```{r}
+# Define the expected proportions for each pain category for underfeeding
+annoying_underfed <- 0.849999982 # 84.9999992%
+hurtful_underfed <- 0.15 # 15%
+disabling_underfed<- 0.000000009 # 0.0000009
+excruciating_underfed<- 0.000000009 # 0.0000009
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_underfed,hurtful_underfed,disabling_underfed,excruciating_underfed))
+
+# Define the parameters for the Dirichlet distribution
+dir_underfed <- c(annoying_underfed*100, hurtful_underfed*100, disabling_underfed*100, excruciating_underfed*100) 
+
+int_underfed <- rdirichlet(100000, dir_underfed)
+# check that 90% interval is reasonable
+int_underfed_summary<-round(rbind((quantile(x =int_underfed[,1], probs = c(.05, .50, .95))), 
+                                   (quantile(x =int_underfed[,2], probs = c(.05, .50, .95))), 
+                                   (quantile(x =int_underfed[,3], probs = c(.05, .50, .95))),
+                                   (quantile(x =int_underfed[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_underfed_summary)<-c("Annoying","Hurtful","Disabling",                          "Excruciating")
+int_underfed_summary 
+```
+
+#### Duration
+
+We expect that if shrimp are underfed, it is because farmers are doing so purposely. Therefore, we expect it to be somewhat infrequent because otherwise, it would negatively impact shrimp growth and farm production.
+
+```{r}
+# Distribution representing duration of being underfed given the farm does engage in underfeeding. 
+underfed_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.2, sd=0.2)
+plot(density(underfed_dist), frame=FALSE,yaxt="n",, main="Duration of underfeeding", xlab="Proportion of shrimp's life")
+
+hours_underfed = overall_proportion_hours_lived*underfed_dist
+
+quantile(hours_underfed, probs = c(0.01, .05, .50, .95))
+```
+
+Finally, we combine the prevalence, intensity, and duration estimates.
+
+```{r}
+# Combine overall time underfed at an underfeeding farm with the likelihood of being on such a farm and the pain intensity of being underfed
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_underfed = as.data.frame(
+  hours_underfed*int_underfed*prev_underfed)
+colnames(average_hours_underfed)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_underfed$Disabling_Equivalent<- (
+  average_hours_underfed$Annoying*Annoying_Weight) + (
+    average_hours_underfed$Hurtful*Hurtful_Weight) +(
+      average_hours_underfed$Disabling*Disabling_Weight)+(
+        average_hours_underfed$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+underfed_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_underfed$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_underfed$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_underfed$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_underfed$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_underfed$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_underfed))
+row.names(underfed_summary)<-c(
+  "Annoying_underfeed","Hurtful_underfeed","Disabling_underfeed", "Excruciating_underfeed", "Disabling-Equivalent_Underfeeding")
+underfed_summary
+```
+
+### Predators
+
+#### Prevalence
+
+We were unable to find estimates of the incidence of predators or data on how much mortality predators typically cause. However, a consulted expert suggested that predators are usually well-managed in current shrimp farming practices. We expect that where this issue is present, it is usually in extensive farms. We, therefore, assign extensive as "unlikely", and semi-intensive and intensive as "very unlikely". We also reduce the standard deviation for intensive farms because some of this type of farm are indoors.
+
+We also deviate from the prevalence estimate categories here, giving super-intensive farms a value of zero because super-intensive are indoor, closed, predator-free systems.
+
+```{r}
+### Prevalence
+system_predator <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                           mean = c(.30, .10, .10, .005), # for coding simplicity, we set super-intensive to zero below after drawing from the beta distribution
+                           sd = c(.05, .05, .01, .005)) 
+system_predator_sample<-mapply(sample_beta,system_predator$mean,system_predator$sd)
+system_predator_sample[ , 4] <- 0 # setting intensive and super-intensive to zero
+
+colnames(system_predator_sample)<-system_predator$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that experiences predation
+system_predator_prop<-cbind(system_predator_sample, prop_sample)
+
+prev_predator <- apply(system_predator_prop,1, sample_row)
+```
+
+#### Intensity
+
+We expect that shrimp who are predated upon are killed reasonably quickly by predators, so we assign most pain to annoying and hurtful, with a small proportion given to disabling and excruciating to represent imminent death. The annoying pain proportion also represents the stress of shrimp being vigilant of predators.
+
+```{r}
+### Intensity
+annoying_predator <- 0.989991 # 98.9991%
+hurtful_predator <- 0.01 # 1% 
+disabling_predator<- 0.0000045 # 0.00045%
+excruciating_predator<-0.0000045 # 0.00045%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_predator,hurtful_predator,disabling_predator,excruciating_predator))
+
+# Define the parameters for the Dirichlet distribution
+dir_predator <- c(annoying_predator*100, hurtful_predator*100, disabling_predator*100, excruciating_predator*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_predator <- rdirichlet(100000, dir_predator) 
+# check that 90% interval is reasonable
+int_predator_summary<-round(rbind((quantile(x =int_predator[,1], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_predator[,2], probs = c(.05, .50, .95))), 
+                               (quantile(x =int_predator[,3], probs = c(.05, .50, .95))),
+                               (quantile(x =int_predator[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_predator_summary)<-c("Annoying","Hurtful","Disabling",
+                                "Excruciating")
+int_predator_summary 
+```
+
+#### Duration
+
+The duration of predation also includes predators being present such that shrimp are aware of them. If we assume predators are present for around one hour a day, and the average shrimp lives 81 days, then this is about 4% of a shrimp's life. We take 4% as the mean.
+
+```{r}
+### Duration
+predator_dist = rtruncnorm(n=100000, a=0, b=1, mean=0.04, sd=0.1)
+plot(density(predator_dist, from=0, to=1), frame=FALSE,yaxt="n", main="Duration of predator presence", xlab="Proportion of shrimp's life")
+
+hours_predator = overall_proportion_hours_lived*predator_dist
+quantile(hours_predator, probs = c(0.01, .05, .50, .95))
+```
+
+Then, we combine prevalence, duration, and intensity.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_predator = as.data.frame(
+  hours_predator*int_predator*prev_predator)
+colnames(average_hours_predator)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_predator$Disabling_Equivalent<- (
+  average_hours_predator$Annoying*Annoying_Weight) + (
+    average_hours_predator$Hurtful*Hurtful_Weight) +(
+      average_hours_predator$Disabling*Disabling_Weight)+(
+        average_hours_predator$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+predator_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_predator$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_predator$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_predator$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_predator$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_predator$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_predator))
+row.names(predator_summary)<-c(
+  "Annoying_predator","Hurtful_predator","Disabling_predator", "Excruciating_predator", "Disabling-Equivalent_Predators")
+predator_summary
+
+```
+
+### Eyestalk ablation
+
+We split eyestalk ablation into two categories: The ablation itself and the hour immediately afterward (acute pain), and the week after that (chronic pain).
+
+An estimate we will use for both parts is how often eyestalk ablation occurs in each production system. We assume that eyestalk ablation becomes more common in more intensive systems because these systems are far more likely to rely on captive broodstock than wild-caught shrimp. Still, the prevalence is unlikely to be 100% for intensive and super-intensive farms because some broodstock suppliers have stopped using eyestalk ablation ([Albalat et al., 2022](https://doi.org/10.3389/fmars.2022.886024)). We are less certain to what extent semi-intensive farms use captive broodstock, so we categorize this farm type as 'somewhat likely' but increase the standard deviation to 0.1. Traditionally, extensive systems relied more on wild-caught young shrimp, so we categorize this as 'unlikely' but also increase the standard deviation at 0.1.
+
+```{r}
+
+system_ablation <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                    mean = c(.30, .50, .90, .90),
+                    sd = c(.10, .10, .05, .05))
+
+system_ablation_sample<-mapply(sample_beta,system_ablation$mean,system_ablation$sd)
+colnames(system_ablation_sample)<-system_ablation$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production dependent on ablation.
+
+system_ablation_prop<-cbind(system_ablation_sample, prop_sample)
+
+prev_ablation <- apply(system_ablation_prop,1, sample_row)
+
+
+```
+
+We also need to adjust for the fact that only female broodstock are subjected to eyestalk ablation, not their offspring who are actually raised for food. According to [van der Pijl (2020, p.32)](https://shrimpinsights.com/report-series/vannamei-broodstock), 1.66 million broodstock were produced in 2020. [Waldhorn and Autric (2022)](https://doi.org/10.31219/osf.io/b8n3t) estimated that for that same year, 440 billion shrimp were farmed (not including broodstock), which would make broodstock account for approximately 0.0000038% of the industry (1.66/(1.66+440000)). We assume half of these were female, making the proportion 0.0000019. Many wild-caught broodstock are no longer ablated because of high mortality rates, but we add some uncertainty to account for the small number of broodstock that may be wild-caught and ablated (and to account for the inherent uncertainty in the estimations).
+
+```{r}
+
+Broodstock_Population_Proportion<- sample_beta(.0000019, .0000038) # the proportion of shrimp on any given farm that are broodstock.
+
+# multiply proportion of farms that source larvae from ablated broodstock by proportion of shrimp on those farms that are broodstock. This gives you the proportion of farmed broodstock that are ablated shrimp.
+prev_broodstock_ablation<-prev_ablation*Broodstock_Population_Proportion
+
+```
+
+#### Part 1 --- Acute pain
+
+We begin by estimating the *acute* pain severity of eyestalk ablation ("part 1 pain"). We assume severity is the same in each production style, conditional on being ablated. This assumption may be violated if the method for ablating shrimp varies in pain severity and is correlated with production style.
+
+After having one eyestalk ablated, shrimp display several behaviors potentially indicative of pain, like tail-flicking, recoiling, stooping (laying prone on the pond floor), disorientation, avoiding sheltering, erratic swimming and rubbing the affected area for a period of time after ablation ([Diarte-Plata et al., 2012](https://doi.org/10.1016/j.applanim.2012.06.002); [Barr et al., 2008](https://doi.org/10.1016/j.anbehav.2007.07.004); [Taylor et al., 2004](https://doi.org/10.1016/j.aquaculture.2003.09.034)). In particular, [Diarte-Plata et al. (2012)](https://doi.org/10.1016/j.applanim.2012.06.002) report that ligation, even using a local anesthetic, causes more stress than other techniques, as indicated by significantly more tail-flicking, recoil, disorientation, and rubbing of the affected area. Additionally, up to 80% of the studied shrimp displayed similar behaviors when a slitting ablation method was used. Similarly, in [Taylor et al.'s (2004)](https://doi.org/10.1016/j.aquaculture.2003.09.034) study, 80% of the shrimp exhibited erratic swimming behavior right after the animals had one of their eyes ablated. Shrimp show fewer behavioral signs of stress if a topical anesthetic is applied before ablation ([Diarte-Plata et al., 2012](https://doi.org/10.1016/j.applanim.2012.06.002); [Taylor et al., 2004](https://doi.org/10.1016/j.aquaculture.2003.09.034)). Many of these behaviors seem consistent with 'hurtful' and 'disabling' pain, so we assign most of the pain to these categories. We also include a small proportion in 'excruciating' because mortality is higher in ablated females ([Zacarias et al., 2019](https://doi.org/10.1016/j.aquaculture.2019.01.018)).
+
+```{r}
+# Intensity - Part 1
+annoying_ablation_1 <- 0.199 # 19.9%
+hurtful_ablation_1 <- 0.30 # 30%
+disabling_ablation_1<- 0.50 # 50%
+excruciating_ablation_1<- 0.001 # 0.1%
+
+check_sum(c(annoying_ablation_1,hurtful_ablation_1,disabling_ablation_1,excruciating_ablation_1))
+
+# Define the parameters for the Dirichlet distribution
+dir_ablation_1 <- c(annoying_ablation_1*100, hurtful_ablation_1*100, disabling_ablation_1*100, excruciating_ablation_1*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_ablation_1 <- rdirichlet(100000, dir_ablation_1) 
+
+int_ablation_1_summary<-round(rbind((quantile(x =int_ablation_1[,1], probs = c(.05, .50, .95))), 
+       (quantile(x =int_ablation_1[,2], probs = c(.05, .50, .95))), 
+        (quantile(x =int_ablation_1[,3], probs = c(.05, .50, .95))),
+        (quantile(x =int_ablation_1[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_ablation_1_summary)<-c("Annoying","Hurtful","Disabling",
+                                     "Excruciating")
+int_ablation_1_summary 
+```
+
+[Taylor et al. (2004)](https://doi.org/10.1016/j.aquaculture.2003.09.034) noted that erratic swimming continued for an hour after ablation.
+
+```{r}
+# Duration
+
+# time can't be lower than 0, and a long right tail may be more plausible than a symmetric distribution. so we use a lognormal distribution.
+hours_ablation_1<-sample_logn(1, .25)  
+plot(density(hours_ablation_1), xlab="Hours", main="Duration of acute eyestalk ablation pain")
+quantile(hours_ablation_1, probs = c(.05, .50, .95))
+```
+
+Now we combine the intensity and duration of acute pain, and then combine this with prevalence.
+
+```{r}
+# among ablated shrimp, the average number of minutes they are in each type of pain...
+ablated_pain_1<-int_ablation_1*hours_ablation_1
+colnames(ablated_pain_1)<-c("Annoying_1","Hurtful_1","Disabling_1",                        "Excruciating_1")
+
+#...discounted by proportion of farmed shrimp who are ablated broodstock, providing the amount of time that the "average" farmed shrimp is in part 1 ablated pain
+
+average_hours_ablated_1<- as.data.frame(ablated_pain_1*prev_broodstock_ablation)
+
+# convert to disabling metric
+average_hours_ablated_1$Disabling_Equivalent_1<- (average_hours_ablated_1$Annoying_1*Annoying_Weight) +(average_hours_ablated_1$Hurtful_1*Hurtful_Weight) +(average_hours_ablated_1$Disabling_1*Disabling_Weight)+(average_hours_ablated_1$Excruciating_1*Excruciating_Weight)
+```
+
+#### Part 2 --- chronic pain
+
+We now estimate the *chronic* pain severity of eyestalk ablation ("part 2 pain"), which follows directly after part 1 pain. We assume that the pain is much milder but also longer-lasting.
+
+As behavior returns to normal roughly an hour after ablation ([Taylor et al., 2004](https://doi.org/10.1016/j.aquaculture.2003.09.034)), we assign most of the chronic pain to the 'annoying' category. We still leave some in the other pain categories because some mortality of ablated broodstock likely happens during the chronic pain stage.
+
+```{r}
+# Intensity - Part 2
+annoying_ablation_2 <- 0.98994 # 98.994%
+hurtful_ablation_2 <- 0.01 # 0.01%
+disabling_ablation_2<- 0.00004 # 0.004%
+excruciating_ablation_2<- 0.00002 # 0.002%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_ablation_2,hurtful_ablation_2,disabling_ablation_2,excruciating_ablation_2))
+
+# Define the parameters for the Dirichlet distribution
+dir_ablation_2 <- c(annoying_ablation_2*100, hurtful_ablation_2*100, disabling_ablation_2*100, excruciating_ablation_2*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_ablation_2 <- rdirichlet(100000, dir_ablation_2) 
+
+int_ablation_2_summary<-round(rbind((quantile(x =int_ablation_2[,1], probs = c(.05, .50, .95))), 
+       (quantile(x =int_ablation_2[,2], probs = c(.05, .50, .95))), 
+        (quantile(x =int_ablation_2[,3], probs = c(.05, .50, .95))),
+        (quantile(x =int_ablation_2[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_ablation_2_summary)<-c("Annoying","Hurtful","Disabling",                   "Excruciating")
+int_ablation_2_summary 
+
+```
+
+Now we model how long the second part of eyestalk ablation pain lasts. To be conservative, we assume that chronic pain lasts only a week, on average.
+
+```{r}
+# 168 hours in a week, sample from lognormal for consistency
+hours_ablation_2<-sample_logn(168 , 24)
+plot(density(hours_ablation_2) , main="Duration of chronic eyestalk ablation pain", xlab="Hours")
+quantile(hours_ablation_2, probs = c(.05, .50, .95)) #verify that median and 90% interval look right
+```
+
+Now, we combine these pieces of information together.
+
+```{r}
+# among ablated shrimp, the average number of minutes they are in each type of pain...
+ablated_pain_2<-int_ablation_2*hours_ablation_2
+colnames(ablated_pain_2)<-c("Annoying_2","Hurtful_2","Disabling_2",                                "Excruciating_2")
+
+#...discounted by proportion of farmed shrimp who are ablated broodstock, providing the amount of time that the "average" farmed shrimp is in part 2 ablated pain
+
+average_hours_ablated_2<- as.data.frame(ablated_pain_2*prev_broodstock_ablation)
+
+# convert to disabling metric
+average_hours_ablated_2$Disabling_Equivalent_2<- (average_hours_ablated_2$Annoying_2*Annoying_Weight) +(average_hours_ablated_2$Hurtful_2*Hurtful_Weight) +(average_hours_ablated_2$Disabling_2*Disabling_Weight)+(average_hours_ablated_2$Excruciating_2*Excruciating_Weight)
+```
+
+#### Total Suffering Due to Eyestalk Ablation
+
+Finally, we combine the part 1 and part 2 results to get the number of minutes in (disabling-equivalent) pain for the average shrimp. The numbers are low primarily because only a small proportion of farmed shrimp are broodstock.
+
+```{r}
+
+# combine part 1 and part 2 data
+average_hours_ablated_total<-cbind(average_hours_ablated_1, average_hours_ablated_2)
+
+# add new columns that sum each type of average pain-times together
+average_hours_ablated_total<-average_hours_ablated_total %>% 
+  mutate(Annoying_Total = Annoying_1+Annoying_2,
+         Hurtful_Total = Hurtful_1+Hurtful_2,
+         Disabling_Total = Disabling_1+Disabling_2,
+         Excruciating_Total = Excruciating_1+Excruciating_2,
+         Disabling_Equivalent_Total = Disabling_Equivalent_1+Disabling_Equivalent_2)
+
+# get rid of the part 1 and part 2 columns, keeping the total columns
+average_hours_ablated_total<-average_hours_ablated_total[,11:15]
+
+# check median and 90% interval 
+ablation_summary<-cbind(round(rbind((quantile(x =average_hours_ablated_total$Annoying_Total, probs = c(.05, .50, .95))), 
+       (quantile(x =average_hours_ablated_total$Hurtful_Total, probs = c(.05, .50, .95))), 
+        (quantile(x =average_hours_ablated_total$Disabling_Total, probs = c(.05, .50, .95))),
+       (quantile(x =average_hours_ablated_total$Excruciating_Total, probs = c(.05, .50, .95))),
+        (quantile(x =average_hours_ablated_total$Disabling_Equivalent_Total, probs = c(.05, .50, .95)))), 15),
+  "Mean" = colMeans(average_hours_ablated_total))
+row.names(ablation_summary)<-c("Annoying_eyestalk","Hurtful_eyestalk","Disabling_eyestalk",                     "Excruciating_eyestalk", "Disabling-Equivalent_Eyestalk_ablation")
+ablation_summary 
+
+```
+
+### Waterless transport
+
+#### Prevalence
+
+Only broodstock shrimp being transported by air and shrimp sold live are transported without water. Therefore, we think extensive farms are 'very unlikely' to use waterless transportation, semi-intensive are 'somewhat likely', and intensive and super-intensive are 'very likely', though we increase the standard deviations to account for our uncertainty here. We then weight these prevalences by the proportion of shrimp who are broodstock and the proportion that are sold live (which we estimate to be around 2%).
+
+```{r}
+### Prevalence
+system_nowater <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                            mean = c(.10, .50, 0.90, 0.90),
+                            sd = c(.10, .10, .10, .10)) 
+system_nowater_sample<-mapply(sample_beta,system_nowater$mean,system_nowater$sd)
+colnames(system_nowater_sample)<-system_nowater$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that use waterless transport
+system_nowater_prop<-cbind(system_nowater_sample, prop_sample)
+
+prev_nowater_unadjusted <- apply(system_nowater_prop,1, sample_row)
+
+Waterless_Population_Proportion<- sample_beta(.0200038, .000008) # adding shrimp who are sold live (estimated 2%) to proportion of broodstock
+plot(density(Waterless_Population_Proportion))
+
+prev_nowater<-prev_nowater_unadjusted*Waterless_Population_Proportion
+```
+
+#### Intensity
+
+Reducing temperature over 30 minutes, apparently common in practice, causes oxidative stress which drastically increases mortality for trips of at least 10 hours ([Xu et al., 2021](https://doi.org/10.1016/j.jtherbio.2021.103080)). An operator we called at American Penaeid reported an \~85% survival rate for broodstock. Industry researchers often report survival rates of "up to 80 percent" after 12 hours or even a whole day ([Goodrick et al., 1993](https://www.frdc.com.au/sites/default/files/products/1991-071-DLD.pdf#page=49); [Xu et al. (2021)]((https://doi.org/10.1016/j.jtherbio.2021.103080)). Survival in actual practice is potentially worse than in study conditions where researchers are dealing with a comparatively small number of animals and using optimal water quality conditions in the post-transport tanks.
+
+```{r}
+### Intensity
+annoying_nowater <- 0.6091 # 60.91%
+hurtful_nowater <- 0.39 # 39%
+disabling_nowater<- 0.0006 # 0.06%
+excruciating_nowater<- 0.0003 # 0.03%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_nowater,hurtful_nowater,disabling_nowater,excruciating_nowater))
+
+# Define the parameters for the Dirichlet distribution
+dir_nowater <- c(annoying_nowater*100, hurtful_nowater*100, disabling_nowater*100, excruciating_nowater*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_nowater <- rdirichlet(100000, dir_nowater) 
+# check that 90% interval is reasonable
+int_nowater_summary<-round(rbind((quantile(x =int_nowater[,1], probs = c(.05, .50, .95))), 
+                                (quantile(x =int_nowater[,2], probs = c(.05, .50, .95))), 
+                                (quantile(x =int_nowater[,3], probs = c(.05, .50, .95))),
+                                (quantile(x =int_nowater[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_nowater_summary)<-c("Annoying","Hurtful","Disabling",
+                                 "Excruciating")
+int_nowater_summary 
+```
+
+#### Duration
+
+Florida-based American Penaeid, Inc. boasts of being [four hours away from international airports](https://penaeid.com/the-facility/). Their customers are [8-28 hours away by plane](https://penaeid.com/footprint/). If we assume hatcheries are also about four hours away from international airports, then total shipment time is 16-36 hours in total, though businesses like [Benchmark Genetics Shrimp](https://wp-bmkgenetics-2022.s3.eu-west-2.amazonaws.com/media/2022/01/01132950/BMK-Genetics_Shrimp-Broodstock-Acclim-Brochure-Final-201026.pdf) are prepared to acclimatize broodstock who have traveled for up to 72 hours.
+
+```{r}
+### Duration
+hours_nowater = rtruncnorm(n=100000, a=4, b=72, mean=30, sd = 16)
+plot(density(hours_nowater), xlim=c(0,72), frame=FALSE,yaxt="n", main="Duration of waterless transport", xlab="Hours")
+
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_nowater = as.data.frame(
+  hours_nowater*int_nowater*prev_nowater)
+colnames(average_hours_nowater)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_nowater$Disabling_Equivalent<- (
+  average_hours_nowater$Annoying*Annoying_Weight) + (
+    average_hours_nowater$Hurtful*Hurtful_Weight) +(
+      average_hours_nowater$Disabling*Disabling_Weight)+(
+        average_hours_nowater$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+nowater_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_nowater$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_nowater$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_nowater$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_nowater$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_nowater$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_nowater))
+row.names(nowater_summary)<-c(
+  "Annoying_nowater","Hurtful_nowater","Disabling_nowater", "Excruciating_nowater", "Disabling-Equivalent_Waterless_transportation")
+nowater_summary
+
+```
+
+### Water-based transport
+
+#### Prevalence
+
+Any shrimp who shrimtransported between facilities within the same country are usually transported using water-based methods. Since most farms probably do not have on-site hatcheries, this means that most shrimp are transported in this way at some point, though we are somewhat uncertain about this. Super-intensive facilities are more likely to have on-site hatcheries, so we categorize this farm type as 'somewhat likely'. We categorize semi-intensive and intensive as 'likely'. We increase standard deviations for all farm types to represent our uncertainty of these estimates.
+
+```{r}
+### Prevalence
+system_water <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                             mean = c(.70, .70, .70, .50), # some shrimp in extensive and semi-intensive come into ponds naturally with the tide, some in super-intensive are produced by on-site broodstock
+                             sd = c(.10, .10, .10, .10)) 
+system_water_sample<-mapply(sample_beta,system_water$mean,system_water$sd)
+colnames(system_water_sample)<-system_water$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that is transported in water
+
+system_water_prop<-cbind(system_water_sample, prop_sample)
+
+prev_water <- apply(system_water_prop,1, sample_row)
+```
+
+#### Intensity
+
+Mortality rates can reach 25% for 24-hour trips ([Debnath et al., 2015, Table 3](https://doi.org/10.1111/raq.12094)). High densities during transportation also pose risks to water quality, including dissolved oxygen depletion and increased ammonia concentrations. As some individuals become weaker, incidences of cannibalism can also rise. We account for these issues here because they are separate from dissolved oxygen and ammonia in farm ponds.
+
+We assign pain to the 'annoying' and 'hurtful' categories to account for restricted movement and behavior, and to 'disabling' and 'excruciating' to account for cannibalism and mortality.
+
+```{r}
+### Intensity
+annoying_water <- 0.7486 # 74.86%
+hurtful_water <- 0.25 # 25%
+disabling_water<- 0.001 # 0.1%
+excruciating_water<- 0.0004 # 0.04%
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_water,hurtful_water,disabling_water,excruciating_water))
+
+# Define the parameters for the Dirichlet distribution
+dir_water <- c(annoying_water*100, hurtful_water*100, disabling_water*100, excruciating_water*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_water <- rdirichlet(100000, dir_water) 
+# check that 90% interval is reasonable
+int_water_summary<-round(rbind((quantile(x =int_water[,1], probs = c(.05, .50, .95))), 
+                                 (quantile(x =int_water[,2], probs = c(.05, .50, .95))), 
+                                 (quantile(x =int_water[,3], probs = c(.05, .50, .95))),
+                                 (quantile(x =int_water[,4], probs = c(.05, .50, .95)))), 5)
+row.names(int_water_summary)<-c("Annoying","Hurtful","Disabling","Excruciating")
+int_water_summary
+```
+
+#### Duration
+
+We estimate that water-based transport could, in theory, last from a few minutes up to 72 hours but that longer durations are less common.
+
+```{r}
+### Duration
+hours_water = rtruncnorm(n=100000, a=0, b=72, mean=24, sd = 16)
+plot(density(hours_water), "Duration of water-based transport", xlab="Hours")
+```
+
+Then we combine all of the estimations for water-based transport.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp , the average number of minutes they are in each type of pain...
+average_hours_water = as.data.frame(
+  hours_water*int_water*prev_water)
+colnames(average_hours_water)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_water$Disabling_Equivalent<- (
+  average_hours_water$Annoying*Annoying_Weight) + (
+    average_hours_water$Hurtful*Hurtful_Weight) +(
+      average_hours_water$Disabling*Disabling_Weight)+(
+        average_hours_water$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+water_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_water$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_water$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_water$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_water$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_water$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_water))
+row.names(water_summary)<-c(
+  "Annoying_water","Hurtful_water","Disabling_water", "Excruciating_water", "Disabling-Equivalent_Water-based_transportation")
+water_summary
+
+```
+
+### Harvest (collection)
+
+Here, we are evaluating any collection method that does not kill the shrimp before removing them from the ponds or tanks nor pumps them directly to slaughter. This includes cast nets or seine nets, scoop nets, draining shrimp out of the pond into a net, and mechanically pumping shrimp out of the pond.
+
+#### Prevalence
+
+All shrimp who make it to slaughter age are harvested. Some intensive and super-intensive farms use pumps that pump shrimp directly into the ice slurry slaughter, so these do not apply to this welfare threat. Therefore, we categorize these farm types as 'very likely' but increase standard deviations to represent our uncertainty about the proportion using these collection techniques.
+
+Extensive and semi-intensive farms probably only use collection methods of the type considered here, so we set these to 1.
+
+```{r}
+### Prevalence
+system_collect <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                             mean = c(.99, .99, .90, .90),
+                             sd = c(.01, .01, .10, .10))
+system_collect_sample<-mapply(sample_beta,system_collect$mean,system_collect$sd)
+system_predator_sample[ , 3:4] <- 1 # setting intensive and super-intensive to zero
+colnames(system_collect_sample)<-system_collect$FarmType
+
+system_collect_prop<-cbind(system_collect_sample, prop_sample)
+
+prev_collect_unadjusted <- apply(system_collect_prop,1, sample_row)
+
+# adjust for the fact that only shrimp who don't die pre-collection are collected
+prev_collect<-prev_collect_unadjusted*stage_probabilities[,4]
+```
+
+#### Intensity
+
+Shrimp who are collected out of the ponds experience prolonged air exposure, which could cause death by suffocation. They may also be crushed by other shrimp or by farm workers. We, therefore, assign most pain to 'hurtful' and 'disabling'.
+
+```{r}
+### Intensity
+annoying_collect<- 0.10 # 10%
+hurtful_collect<- 0.69 # 69%
+disabling_collect<- 0.20 # 20%
+excruciating_collect <- 0.01 # 1%
+
+# verify that the proportions sum to 1
+check_sum(c(annoying_collect,hurtful_collect,disabling_collect,excruciating_collect))
+
+# Define the parameters for the Dirichlet distribution
+dir_collect <- c(annoying_collect*100, hurtful_collect*100, disabling_collect*100, excruciating_collect*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_collect <- rdirichlet(100000, dir_collect) 
+# check that 90% interval is reasonable
+int_collect_summary<-round(rbind((quantile(x =int_collect[,1], probs = c(.05, .50, .95))), 
+                                 (quantile(x =int_collect[,2], probs = c(.05, .50, .95))), 
+                                 (quantile(x =int_collect[,3], probs = c(.05, .50, .95))),
+                                 (quantile(x =int_collect[,4], probs = c(.05, .50, .95)))), 2)
+row.names(int_collect_summary)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+int_collect_summary 
+```
+
+#### Duration
+
+We estimate that collection takes between 15 minutes and one hour, with a mean of 20 minutes.
+
+```{r}
+### Duration
+hours_collect <- rtruncnorm(n=100000, a=0.1, b=1, mean=1/3, sd=.25)
+plot(density(hours_collect), main="Duration of harvest", xlab="Hours")
+```
+
+We then combine prevalence, intensity, and duration of collection.
+
+```{r}
+# Combine prevalence, intensity and duration
+
+# Among shrimp, overall mins collected, intensity of collection, probability of collection by farm type
+average_hours_collect = as.data.frame(
+  hours_collect*int_collect*prev_collect)
+colnames(average_hours_collect)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_collect$Disabling_Equivalent<- (
+  average_hours_collect$Annoying*Annoying_Weight) + (
+    average_hours_collect$Hurtful*Hurtful_Weight) +(
+      average_hours_collect$Disabling*Disabling_Weight)+(
+        average_hours_collect$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+collect_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_collect$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_collect$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_collect$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_collect$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_collect$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_collect))
+row.names(collect_summary)<-c(
+  "Annoying_collection","Hurtful_collection","Disabling_collection", "Excruciating_collection", "Disabling-Equivalent_Harvest")
+collect_summary
+
+```
+
+### Slaughter
+
+Here, we are evaluating the ice slurry method of slaughter.
+
+#### Prevalence
+
+All shrimp who are slaughtered are slaughtered using ice slurry. Shrimp who are sold live are not slaughtered so we must account for this in our estimations. We, therefore, estimate that all farm types are 98% likely to use ice slurry to slaughter shrimp. We then account for the fact that only shrimp who make it slaughter age and do not die during collection are slaughtered. To do this, we weight by the relevant life-stage proportions, and by our estimate that between 0% and 50% of shrimp die during collection, before slaughter.
+
+```{r}
+### Prevalence
+system_slaught <- data.frame(FarmType = c("Extensive", "Semi-Intensive","Intensive","Super-Intensive"),
+                          mean = c(.98, .98, .98, .98), # accounting for shrimp sold live
+                          sd = c(.01, .01, .01, .01)) # accounting the fact that we know nearly all shrimp are slaughtered this way
+system_slaught_sample<-mapply(sample_beta,system_slaught$mean,system_slaught$sd)
+colnames(system_slaught_sample)<-system_slaught$FarmType
+
+# Now weight by proportion of population that comes from each type of system, to get overall proportion of production that is slaughtered in ice slurry.
+
+system_slaught_prop<-cbind(system_slaught_sample, prop_sample)
+
+# Sample each value from each row, proportional to its probability
+
+prev_slaught_unadjusted <- apply(system_slaught_prop,1, sample_row)
+
+# adjust for the fact that only shrimp who don't die pre-slaughter are slaughtered
+slaughter_population_proportion <- stage_probabilities[,4]
+
+# adjust for the fact that some die during collection before slaughter
+slaughter_population_proportion_adjusted<-rep(NA, 100000)
+for(i in 1:100000){
+  slaughter_population_proportion_adjusted[i] = slaughter_population_proportion[i] * 
+    rtruncnorm(n=1, a=0, b=0.5, mean=0.25, sd=.25)
+} # best guess at proportion that die during collection before slaughter - we think it is somewhere between 0 and 50% 
+
+prev_slaught<-prev_slaught_unadjusted*slaughter_population_proportion_adjusted
+```
+
+#### Intensity
+
+Whether shrimp feel pain during ice slurry slaughter is highly uncertain. *P. vannamei* shrimp tail-flick vigorously after being submerged in the ice slurry ([Weineck et al., 2018](http://doi.org/10.3390/ani8090158)). Tail-flicking is a reflex---when shrimp' abdomens are removed from the rest of their body, they still show tail-flicking activity ([Weineck et al., 2018](http://doi.org/10.3390/ani8090158)). As such, it is unlikely to be, by itself, a reliable indicator of pain. However, that does not necessarily mean that the individual cannot consciously experience it.
+
+The salinity of ice slurry is also likely to be different from that of the pond. Given that shrimp can detect cold ([Tani & Kuramoto, 1998](https://doi.org/10.1016/S1095-6433(98)01025-3)) and are likely to be stressed from being out of the pond and in an environment of different temperature and salinity, we assign most pain to 'hurtful' and 'disabling'.
+
+```{r}
+### Intensity
+annoying_slaught<-0.15 # 15%
+hurtful_slaught<-0.35 # 35%
+disabling_slaught<-0.45 # 45%
+excruciating_slaught<-0.05 # 5% 
+
+#verify that the proportions sum to 1
+check_sum(c(annoying_slaught,hurtful_slaught,disabling_slaught,excruciating_slaught))
+
+# Define the parameters for the Dirichlet distribution
+dir_slaught <- c(annoying_slaught*100, hurtful_slaught*100, disabling_slaught*100, excruciating_slaught*100) 
+
+# Sample from the Dirichlet distribution so that the four probabilities must sum to 1 for each sample
+int_slaught <- rdirichlet(100000, dir_slaught) 
+# check that 90% interval is reasonable
+int_slaught_summary<-round(rbind((quantile(x =int_slaught[,1], probs = c(.05, .50, .95))), 
+                              (quantile(x =int_slaught[,2], probs = c(.05, .50, .95))), 
+                              (quantile(x =int_slaught[,3], probs = c(.05, .50, .95))),
+                              (quantile(x =int_slaught[,4], probs = c(.05, .50, .95)))), 2)
+row.names(int_slaught_summary)<-c("Annoying","Hurtful","Disabling",
+                               "Excruciating")
+int_slaught_summary 
+```
+
+#### Duration
+
+We calculate first in minutes, then convert this to hours, so we can compare it to the other welfare threats.
+
+[Weineck et al. (2018)](http://doi.org/10.3390/ani8090158) found that shrimp show no heart rate after around four minutes in ice slurry. We increase the maximum time it could take to seven minutes to account for the fact that ice used on farms may be slightly warmer than in laboratory conditions.
+
+```{r}
+
+### Duration
+mins_slaught <- rtruncnorm(n=100000, a=0.5, b=7, mean=4, sd=1)
+plot(density(mins_slaught), main="Duration of harvest", xlab="Minutes")
+
+hours_slaught<-mins_slaught/60
+# Combine prevalence, intensity and duration
+
+# Among shrimp, overall mins slaughtered, intensity of slaughter, probability of slaughter by farm type
+average_hours_slaught = as.data.frame(
+  hours_slaught*int_slaught*prev_slaught)
+colnames(average_hours_slaught)<-c("Annoying","Hurtful","Disabling", "Excruciating")
+
+# Convert to disabling-equivalent metric
+average_hours_slaught$Disabling_Equivalent<- (
+  average_hours_slaught$Annoying*Annoying_Weight) + (
+    average_hours_slaught$Hurtful*Hurtful_Weight) +(
+      average_hours_slaught$Disabling*Disabling_Weight)+(
+        average_hours_slaught$Excruciating*Excruciating_Weight)
+
+# Report 5%, median, mean and 95% values
+slaught_summary<-cbind(round(rbind(
+  (quantile(x =average_hours_slaught$Annoying, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_slaught$Hurtful, probs = c(.05, .50, .95))), 
+  (quantile(x =average_hours_slaught$Disabling, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_slaught$Excruciating, probs = c(.05, .50, .95))),
+  (quantile(x =average_hours_slaught$Disabling_Equivalent, probs = c(.05, .50, .95)))), 10),
+  "Mean" = colMeans(average_hours_slaught))
+row.names(slaught_summary)<-c(
+  "Annoying_slaughter","Hurtful_slaughter","Disabling_slaughter", "Excruciating_slaughter", "Disabling-Equivalent_Slaughter")
+slaught_summary
+
+```
+
+## Results
+
+Now we put the results from each welfare threat into one table.
+
+```{r}
+## Results
+
+#Putting all the outputs into a table:
+
+comparison_table<-rbind(underfed_summary, malnutri_summary, lowdo_summary, hitemp_summary, lotemp_summary, salin_summary, ph_summary, ammon_summary, pollut_summary, dens_summary, subst_summary, predator_summary, ablation_summary, nowater_summary, water_summary, collect_summary, slaught_summary)
+
+# keeping only the disabling-equivalent pain estimations, which occur every 5th row
+final_comparison_table<-comparison_table[c(5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85),]
+
+# arranging the rows in descending order and adding a total row.
+results<-as.data.frame(final_comparison_table, rownames=TRUE) %>%
+  arrange(desc(Mean)) %>%
+  rownames_to_column("rownames") %>%
+  adorn_totals("row") %>%
+  column_to_rownames("rownames") %>%
+  mutate(`5%`=round(`5%`, 11)) %>% 
+  mutate(`50%`=round(`50%`, 7)) %>%
+  mutate(`95%`=round(`95%`, 5)) %>%
+  mutate(Mean=round(Mean, 6)) 
+
+# cleaning up the row names
+rownames(results)<-gsub("Disabling-Equivalent_","", rownames(results))
+
+
+# making sure the results are not displayed in scientific notation
+results<-format(results,scientific=F)
+
+# print results
+results
+
+```
