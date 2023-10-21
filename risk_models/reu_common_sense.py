@@ -525,12 +525,11 @@ def make_summary_stats_reu_df(reus, a, output_name):
     mean = []
     aa_ev_4 = get_ambiguity_aversion_weighted_utility(reus, 4, aa.cubic_weighting)
     aa_ev_8 = get_ambiguity_aversion_weighted_utility(reus, 8, aa.cubic_weighting)
-    aa_ev_quad = get_ambiguity_aversion_weighted_utility(reus, None, aa.quadratic_weighting)
     fifth_percentile = []
     ninety_fifth_percentile = []
     median = []
     cols = ["Mean, a = {}".format(round(a,2)), "Ambiguity averse, 1.5x weight to worst", "Ambiguity averse, 2x weight to worst", \
-            "Ambiguity averse, quadratic, 3x weight to worst", "fifth percentile", "ninety fifth percentile", "median"]
+            "fifth percentile", "ninety fifth percentile", "median"]
     idx = reus.keys()
 
     for action in reus.keys():
@@ -538,7 +537,7 @@ def make_summary_stats_reu_df(reus, a, output_name):
         fifth_percentile.append(np.percentile(reus[action], 5))
         ninety_fifth_percentile.append(np.percentile(reus[action], 95))
         median.append(np.percentile(reus[action], 50))
-    reu_df = pd.DataFrame(list(zip(mean, aa_ev_4, aa_ev_8, aa_ev_quad, fifth_percentile, ninety_fifth_percentile, median)), \
+    reu_df = pd.DataFrame(list(zip(mean, aa_ev_4, aa_ev_8, fifth_percentile, ninety_fifth_percentile, median)), \
                           columns=cols, index=idx)
     sorted_reu_df = reu_df.sort_values(by=["Mean, a = {}".format(round(a,2))], ascending=False)
     sorted_reu_df.to_csv(os.path.join('common_sense_results', output_name))

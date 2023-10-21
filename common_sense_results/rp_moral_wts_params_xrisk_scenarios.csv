@@ -1,0 +1,13 @@
+,P(Effect),P(Good | Effect),Rel. Magnitide of Bad Effect,BP Risk Reduced per $1B,E(BP Reduced/$1B)
+Scenario 1,0.2,0.55,0.1 to 1.0,0.5 to 5.0,0.02
+Scenario 2,0.2,0.55,0.1 to 1,1.0 to 10.0,0.03
+Scenario 3,0.9,0.55,0.1 to 0.6,0.5 to 5.0,0.08
+Scenario 4,0.9,0.9,0.1 to 0.6,0.5 to 5.0,0.16
+Scenario 5,0.9,0.55,0.1 to 0.6,1.0 to 10.0,0.15
+Scenario 6,0.9,0.9,0.1 to 0.6,1.0 to 10.0,0.32
+Scenario 7,0.9,0.9,0.1 to 0.6,5.0 to 15.0,0.72
+Scenario 8,0.9,0.55,0.1 to 0.6,5.0 to 15.0,0.35
+Scenario 9,0.2,0.55,0.1 to 1.0,50.0 to 150.0,0.69
+Scenario 10,0.9,0.9,0.1 to 0.6,50.0 to 150.0,7.18
+Scenario 11,0.9,0.9,0.1 to 0.6,500.0 to 1000.0,56.73
+Scenario 12,0.2,0.55,0.1 to 1.0,500.0 to 1000.0,5.46
