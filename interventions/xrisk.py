@@ -7,7 +7,7 @@ from squigglepy.numbers import K, M, B
 import copy
 import math 
 
-N = 6*M
+N = 8*M
 
 bp_to_decimal = lambda x: x/10000
 

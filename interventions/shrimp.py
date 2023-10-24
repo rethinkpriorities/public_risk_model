@@ -6,7 +6,7 @@ import pandas as pd
 import squigglepy as sq
 from squigglepy.numbers import K, M, B
 
-N = 6*M
+N = 8*M
 
 ### GENERIC SHRIMP INTERVENTION 
 
@@ -40,12 +40,11 @@ waterquality_shrimp_project = {
     'high_yrs_credit': 5, # high end on years of credit for intervention
     }
 
-# The duration in hours of disabling-equivalent pain 
-#     (1 year = 1 shrimp-DALY) for each welfare threat over the 
+# The duration in hours of DALY-equivalent harm caused by 
+#     each welfare threat over the 
 #     typical shrimp's life. This is based on Hannah McKay
 #     and William McAuliffe's shrimp pain track estimates, 
-#     available at: https://rpubs.com/hannah_/shrimpwelfareissues 
-
+#     available under the Modified_Shrimp_Welfare_Prioritization.Rmd file.
 
 harm_duration_dict = {'high_density': sq.lognorm(0.820, 197.7), 
                       'ammonia': sq.lognorm(0.382, 122.0),
@@ -61,7 +60,7 @@ harm_duration_dict = {'high_density': sq.lognorm(0.820, 197.7),
                       'malnutrition': sq.lognorm(0.0035, 3.61),
                       'harvest': sq.lognorm(0.0748, 1.05),
                       'predators': sq.lognorm(0.00206, 1.43),
-                      'slaughter': sq.lognorm(0.00523, 0.156),
+                      'slaughter': sq.lognorm(0.0505, 0.384),
                       'waterless_transit': sq.lognorm(0.0104, 0.110),
                       'eyestalk_ablation': sq.lognorm(1.5*10**-10, 4*10**-5),
                 }

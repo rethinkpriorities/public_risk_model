@@ -5,7 +5,7 @@ import pandas as pd
 import squigglepy as sq
 from squigglepy.numbers import K, M, B
 
-N = 6*M
+N = 8*M
 
 def amf_dalys_per_1000(to_print=False):
     '''

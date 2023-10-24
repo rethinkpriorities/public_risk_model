@@ -7,7 +7,7 @@ from squigglepy.numbers import K, M, B
 ## Most traffic deaths are amongst adults, 
 ##  so we use 32 DALYs averted per life saved from traffic fatality
 DALYS_PER_LIFE = 32
-N = 6*M
+N = 8*M
 
 
 ## Dictionaries containing the distributions for variables considered in the CEA model for each law 

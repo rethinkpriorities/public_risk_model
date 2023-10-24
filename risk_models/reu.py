@@ -10,7 +10,7 @@ import risk_models.ambiguity_aversion as aa
 
 interventions = ["Nothing", "AMF", "CF campaign", "Shrimp welfare - stunning", "Shrimp welfare - NH3", "Conservative x-risk work", "Risky x-risk work"]
 
-N = 6*M
+N = 8*M
 
 MONEY = 100*M
 
@@ -94,7 +94,7 @@ def create_states_of_world_df(states_dict):
     states_df = pd.DataFrame.from_dict(states_dict).T
     return states_df
 
-def make_daly_burdens_by_harm_dict(xrisk_dalys_at_stake, shrimp_slaughter_human_daly_burden, shrimp_nh3_human_daly_burden, to_print=False):
+def make_daly_burdens_by_harm_dict(xrisk_dalys_at_stake, shrimp_slaughter_human_daly_burden, shrimp_nh3_human_daly_burden, chicken_human_daly_burden, to_print=False):
     '''
     Get a dictionary of the global DALY burden for each of the harms. These are annualized for 
         malaria, chickens, and shrimp, and total for xrisk (the future that we 
@@ -104,7 +104,7 @@ def make_daly_burdens_by_harm_dict(xrisk_dalys_at_stake, shrimp_slaughter_human_
     '''
     daly_burdens_by_harm = {'malaria': -1*sq.sample(sq.norm(mean=63*M, sd=5*M), N), #https://ourworldindata.org/burden-of-disease#the-disease-burden-by-cause
                     'x-risk': -1*xrisk_dalys_at_stake,
-                    'chickens': -1*sq.sample(sq.lognorm(33*M, 2.2*B), N)*sq.sample(sq.lognorm(4, 36, lclip=1, rclip=100)),
+                    'chickens': -1*chicken_human_daly_burden,
                     'shrimp - slaughter': -1*shrimp_slaughter_human_daly_burden,  
                     'shrimp - NH3': -1*shrimp_nh3_human_daly_burden}      
 
@@ -574,7 +574,7 @@ def get_ambiguity_aversion_weighted_utility(reus, coef, weighting_function, to_p
     return aa_ev
 
 def create_necessary_dictionaries_to_define_lotteries(xrisk_dalys_at_stake, shrimp_slaughter_human_daly_burden, \
-                                                      shrimp_nh3_human_daly_burden, to_print=False):
+                                                      shrimp_nh3_human_daly_burden, chicken_human_daly_burden, to_print=False):
     '''
     Create the dictionaries that define the states of the world, the daly burden of each harm, 
         the probabilities of each event occurring, the daly burden dictionary for all harms, and
@@ -582,7 +582,7 @@ def create_necessary_dictionaries_to_define_lotteries(xrisk_dalys_at_stake, shri
     '''
     states_dict = create_states_of_world_dict()
     daly_burden_by_harm = make_daly_burdens_by_harm_dict(xrisk_dalys_at_stake, shrimp_slaughter_human_daly_burden, \
-                                                         shrimp_nh3_human_daly_burden, to_print)
+                                                         shrimp_nh3_human_daly_burden, chicken_human_daly_burden, to_print)
     event_probs = event_probabilities_dict()
 
     daly_burdens_dict = make_daly_burdens_dict(states_dict, daly_burden_by_harm, to_print)  
@@ -610,11 +610,12 @@ def reu_main(a, inputs, results_str, to_print=False):
         )
     '''
     amf_dalys_per_1000, hens_sc_dalys_per_1000, shrimp_slaughter_sc_dalys_per_1000, shrimp_nh3_sc_dalys_per_1000, \
-    shrimp_slaughter_human_daly_burden, shrimp_nh3_human_daly_burden, \
+    shrimp_slaughter_human_daly_burden, shrimp_nh3_human_daly_burden, chicken_human_daly_burden, \
     conservative_xrisk_reduction_per_bn, risky_xrisk_reduction_per_bn, xrisk_dalys_at_stake = inputs
 
     states_dict, daly_burdens_dict, joint_probs_dict, event_probs, daly_burden_by_harm = create_necessary_dictionaries_to_define_lotteries(xrisk_dalys_at_stake, \
                                                                                                                      shrimp_slaughter_human_daly_burden, \
+                                                                                                                     chicken_human_daly_burden, \
                                                                                                                      shrimp_nh3_human_daly_burden, to_print)
     
     # risk neutral

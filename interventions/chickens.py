@@ -7,7 +7,7 @@ import pandas as pd
 import squigglepy as sq
 from squigglepy.numbers import K, M, B
 
-N = 6*M
+N = 8*M
 
 def sample_sc_human_eq_dalys_per_1000_chicken_campaign(moral_weight_lims=None, to_print=False): 
     '''

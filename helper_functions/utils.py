@@ -8,6 +8,7 @@ import risk_models.dmreu_function as dmreu
 import copy 
 import os
 
+MONEY= 10**8
 
 def dmreu_calibration(p):
     '''
@@ -59,8 +60,8 @@ def describe_xrisk_scenarios(xrisk_scenarios_dict, outcomes_dict, xrisk_causes, 
         bp_risk_str = str(xrisk_scenarios_dict[scenario]['params']['low_amt_risk_reduced_per_B']*10000) + " to " + str(xrisk_scenarios_dict[scenario]['params']['high_amt_risk_reduced_per_B']*10000)
         bp_risk_reduced.append(bp_risk_str)
 
-        avg_risk_i = np.round(xrisk_scenarios_dict[scenario]['avg_risk_reduction']*10000, 2)
-        avg_risk_reduced.append(avg_risk_i)
+        avg_risk_i_per_B = np.round(xrisk_scenarios_dict[scenario]['avg_risk_reduction']*10000, 2)*10**9/MONEY
+        avg_risk_reduced.append(avg_risk_i_per_B)
 
         e_value.append(np.mean(outcomes_dict[scenario]))
 

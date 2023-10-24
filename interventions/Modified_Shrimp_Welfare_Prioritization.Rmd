@@ -2056,7 +2056,7 @@ slaughter_population_proportion <- stage_probabilities[,4]
 slaughter_population_proportion_adjusted<-rep(NA, 100000)
 for(i in 1:100000){
   slaughter_population_proportion_adjusted[i] = slaughter_population_proportion[i] * 
-    rtruncnorm(n=1, a=0, b=0.5, mean=0.25, sd=.25)
+    (1-rtruncnorm(n=1, a=0, b=0.5, mean=0.25, sd=.25))
 } # best guess at proportion that die during collection before slaughter - we think it is somewhere between 0 and 50% 
 
 prev_slaught<-prev_slaught_unadjusted*slaughter_population_proportion_adjusted
