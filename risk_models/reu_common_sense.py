@@ -105,7 +105,7 @@ def make_daly_burdens_by_harm_dict(xrisk_dalys_at_stake, shrimp_slaughter_human_
     For the shrimp and chickens, the DALY burdens are adjusted for the sentience-conditioned 
         welfare ranges of the animals. 
     '''
-    daly_burdens_by_harm = {'malaria': -1*sq.sample(sq.norm(mean=63*M, sd=5*M), N), #https://ourworldindata.org/burden-of-disease#the-disease-burden-by-cause
+    daly_burdens_by_harm = {'malaria': -1*sq.sample(sq.lognorm(23506933, 80116072), N), 
                     'x-risk': -1*xrisk_dalys_at_stake,
                     'chickens': -1*chicken_human_daly_burden,
                     'shrimp - slaughter': -1*shrimp_slaughter_human_daly_burden,  
